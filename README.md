@@ -19,6 +19,6 @@ flowchart LR
     Dialect <-->|Deno FFI| ODBC[libmsodbcsql.so]
     ODBC <-->|TCP/IP| SQLServer[(SQL Server)]
     
-    subgraph "No Node.js Runtime"
+    subgraph "No Node.js Dependencies"
         Dialect
     end
