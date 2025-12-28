@@ -9,7 +9,7 @@ Currently, connecting Deno to MSSQL requires relying on Deno's Node.js compatibi
 
 **This project takes a different approach.**
 
-Instead of emulating a Node.js environment, we leverage **Deno FFI (Foreign Function Interface)** to talk directly to the OS-level **Microsoft ODBC Driver**. This results in a "pure" Deno implementation that interacts with the database at the C-level, avoiding any Node.js dependencies.
+Instead of using Node.js libraries, we leverage **Deno FFI (Foreign Function Interface)** to talk directly to the OS-level **Microsoft ODBC Driver**. This results in a "pure" Deno implementation that interacts with the database at the C-level.
 
 ### Architecture
 
