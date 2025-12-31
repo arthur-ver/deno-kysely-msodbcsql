@@ -10,6 +10,9 @@ export enum SQLRETURN {
   SQL_ERROR = -1,
   SQL_INVALID_HANDLE = -2,
   SQL_NO_DATA = 100,
+  SQL_STILL_EXECUTING = 2,
+  SQL_NEED_DATA = 99,
+  SQL_PARAM_DATA_AVAILABLE = 101,
 }
 
 export const SQL_DRIVER_NOPROMPT = 0;
@@ -51,9 +54,9 @@ interface OdbcSymbols {
    * ```
    * 
    * @param handleType The type of handle to be allocated by SQLAllocHandle.
-   * @param inputHandle The input handle in whose context the new handle is to be allocated.
+   * @param inputHandle The input handle in whose context the new handle is to be allocated. If HandleType is `SQL_HANDLE_ENV`, this is `SQL_NULL_HANDLE`. If HandleType is `SQL_HANDLE_DBC`, this must be an environment handle, and if it is `SQL_HANDLE_STMT` or `SQL_HANDLE_DESC`, it must be a connection handle.
    * @param outputHandlePtr Pointer to a buffer in which to return the handle to the newly allocated data structure.
-   * @returns status code.
+   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_INVALID_HANDLE`, or `SQL_ERROR`.
    *
    
    */
@@ -61,21 +64,55 @@ interface OdbcSymbols {
     handleType: HandleType,
     inputHandle: Deno.PointerValue,
     outputHandlePtr: Deno.PointerValue
-  ): Promise<SQLRETURN>;
+  ): Promise<
+    | SQLRETURN.SQL_SUCCESS
+    | SQLRETURN.SQL_SUCCESS_WITH_INFO
+    | SQLRETURN.SQL_INVALID_HANDLE
+    | SQLRETURN.SQL_ERROR
+  >;
 
   /**
-   * Connects to a specific driver by using a connection string.
+   * SQLDriverConnect is an alternative to SQLConnect. It supports data sources that require more connection information than the three arguments in SQLConnect, dialog boxes to prompt the user for all connection information, and data sources that are not defined in the system information. For more information, see Connecting with SQLDriverConnect.
+   * 
+   * ```cpp
+   * SQLRETURN SQLDriverConnectW(  
+   *      SQLHDBC         ConnectionHandle,  
+   *      SQLHWND         WindowHandle,  
+   *      SQLWCHAR *      InConnectionString,  
+   *      SQLSMALLINT     StringLength1,  
+   *      SQLWCHAR *      OutConnectionString,  
+   *      SQLSMALLINT     BufferLength,  
+   *      SQLSMALLINT *   StringLength2Ptr,  
+   *      SQLUSMALLINT    DriverCompletion);
+   * ```
+
+   * @param connectionHandle Connection handle.
+   * @param windowHandle Window handle. The application can pass the handle of the parent window, if applicable, or a null pointer if either the window handle is not applicable or SQLDriverConnect will not present any dialog boxes.
+   * @param inConnectionString A full connection string (see the syntax in "Comments"), a partial connection string, or an empty string.
+   * @param stringLength1 Length of *InConnectionString, in characters if the string is Unicode, or bytes if string is ANSI or DBCS.
+   * @param outConnectionString Pointer to a buffer for the completed connection string. Upon successful connection to the target data source, this buffer contains the completed connection string. Applications should allocate at least 1,024 characters for this buffer. If OutConnectionString is NULL, StringLength2Ptr will still return the total number of characters (excluding the null-termination character for character data) available to return in the buffer pointed to by OutConnectionString.
+   * @param bufferLength Length of the *OutConnectionString buffer, in characters.
+   * @param stringLength2Ptr Pointer to a buffer in which to return the total number of characters (excluding the null-termination character) available to return in *OutConnectionString. If the number of characters available to return is greater than or equal to BufferLength, the completed connection string in *OutConnectionString is truncated to BufferLength minus the length of a null-termination character.
+   * @param driverCompletion Flag that indicates whether the Driver Manager or driver must prompt for more connection information: `SQL_DRIVER_PROMPT`, `SQL_DRIVER_COMPLETE`, `SQL_DRIVER_COMPLETE_REQUIRED`, or `SQL_DRIVER_NOPROMPT`.
+   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_NO_DATA`, `SQL_ERROR`, `SQL_INVALID_HANDLE`, or `SQL_STILL_EXECUTING`.
    */
   SQLDriverConnectW(
-    hdbc: Deno.PointerValue,
-    hwnd: Deno.PointerValue,
-    szConnStrIn: Deno.PointerValue,
-    cbConnStrIn: number,
-    szConnStrOut: Deno.PointerValue,
-    cbConnStrOutMax: number,
-    pcbConnStrOut: Deno.PointerValue,
-    fDriverCompletion: number
-  ): Promise<number>;
+    connectionHandle: Deno.PointerValue,
+    windowHandle: Deno.PointerValue,
+    inConnectionString: BufferSource,
+    stringLength1: number,
+    outConnectionString: BufferSource | null,
+    bufferLength: number,
+    stringLength2Ptr: Deno.PointerValue,
+    driverCompletion: number
+  ): Promise<
+    | SQLRETURN.SQL_SUCCESS
+    | SQLRETURN.SQL_SUCCESS_WITH_INFO
+    | SQLRETURN.SQL_NO_DATA
+    | SQLRETURN.SQL_ERROR
+    | SQLRETURN.SQL_INVALID_HANDLE
+    | SQLRETURN.SQL_STILL_EXECUTING
+  >;
 
   /**
    * Returns the current values of multiple fields of a diagnostic record.
@@ -96,33 +133,61 @@ interface OdbcSymbols {
 
   SQLFreeHandle(recNumber: number, handle: Deno.PointerValue): Promise<number>;
 
+  /**
+   * SQLExecDirect executes a preparable statement, using the current values of the parameter marker variables if any parameters exist in the statement. SQLExecDirect is the fastest way to submit a SQL statement for one-time execution.
+   *
+   * ```cpp
+   * SQLRETURN SQLExecDirectW(
+   *      SQLHSTMT     StatementHandle,
+   *      SQLWCHAR *   StatementText,
+   *      SQLINTEGER   TextLength);
+   * ```
+   *
+   * @param statementHandle Statement handle.
+   * @param statementText SQL statement to be executed.
+   * @param textLength Length of *StatementText in characters.
+   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_NEED_DATA`, `SQL_STILL_EXECUTING`, `SQL_ERROR`, `SQL_NO_DATA`, `SQL_INVALID_HANDLE`, or `SQL_PARAM_DATA_AVAILABLE`.
+   */
   SQLExecDirectW(
-    handle1: Deno.PointerValue,
-    handle2: Deno.PointerValue,
-    recNumber: number
-  ): Promise<number>;
+    statementHandle: Deno.PointerValue,
+    statementText: BufferSource,
+    textLength: number
+  ): Promise<
+    | SQLRETURN.SQL_SUCCESS
+    | SQLRETURN.SQL_SUCCESS_WITH_INFO
+    | SQLRETURN.SQL_NEED_DATA
+    | SQLRETURN.SQL_STILL_EXECUTING
+    | SQLRETURN.SQL_ERROR
+    | SQLRETURN.SQL_NO_DATA
+    | SQLRETURN.SQL_INVALID_HANDLE
+    | SQLRETURN.SQL_PARAM_DATA_AVAILABLE
+  >;
 
   SQLRowCount(handle1: Deno.PointerValue, handle2: Deno.PointerValue): number;
 }
 
 const dylib = Deno.dlopen(libPath, {
   SQLAllocHandle: {
-    parameters: ["i16", "pointer", "pointer"],
-    result: "i16",
+    parameters: [
+      "i16", // SQLSMALLINT: signed short int
+      "pointer", // SQLHANDLE: void *
+      "pointer", // SQLHANDLE *: pointer to a void pointer
+    ],
+    result: "i16", // SQLRETURN: signed short int
     nonblocking: true,
   },
   SQLDriverConnectW: {
     parameters: [
-      "pointer",
-      "pointer",
-      "pointer",
-      "i16",
-      "pointer",
-      "i16",
-      "pointer",
-      "u16",
+      "pointer", // SQLHDBC: void *
+      "pointer", // SQLHWND: void *
+      "buffer", // SQLWCHAR *: pointer to wchar_t
+      "i16", // SQLSMALLINT: signed short int
+      "buffer", // SQLWCHAR *: pointer to wchar_t
+      "i16", // SQLSMALLINT: signed short int
+      "pointer", // SQLSMALLINT *: pointer to signed short int (i16)
+      "u16", // SQLUSMALLINT: unsigned short
     ],
-    result: "i16",
+    result: "i16", // SQLRETURN: signed short int
     nonblocking: true,
   },
   SQLGetDiagRecW: {
@@ -145,7 +210,7 @@ const dylib = Deno.dlopen(libPath, {
     nonblocking: true,
   },
   SQLExecDirectW: {
-    parameters: ["pointer", "pointer", "i32"],
+    parameters: ["pointer", "buffer", "i32"],
     result: "i16",
     nonblocking: true,
   },
@@ -206,7 +271,7 @@ export async function driverConnect(
   const ret = await odbcLib.SQLDriverConnectW(
     dbcHandle,
     null,
-    Deno.UnsafePointer.of(connStrEncoded as any),
+    connStrEncoded,
     SQL_NTS,
     null,
     0,
@@ -227,11 +292,7 @@ export async function execDirect(
   stmtHandle: Deno.PointerValue
 ): Promise<void> {
   const sqlEncoded = strToUtf16(sql);
-  const ret = await odbcLib.SQLExecDirectW(
-    stmtHandle,
-    Deno.UnsafePointer.of(sqlEncoded as any),
-    SQL_NTS
-  );
+  const ret = await odbcLib.SQLExecDirectW(stmtHandle, sqlEncoded, SQL_NTS);
 
   if (
     ret !== SQLRETURN.SQL_SUCCESS &&
@@ -304,9 +365,18 @@ export function getOdbcError(
   return errors.length > 0 ? errors.join("\n") : "Unknown ODBC Error";
 }
 
-export function strToUtf16(str: string): Uint8Array {
+/**
+ * Converts a standard JavaScript string into a raw block of memory that a C program can read.
+ *
+ * @param str
+ */
+export function strToUtf16(str: string): Uint8Array<ArrayBuffer> {
+  // Create a 16-bit array (native C "unsigned short" array). +1 for the null terminator \0
   const buf = new Uint16Array(str.length + 1);
-  for (let i = 0; i < str.length; i++) buf[i] = str.charCodeAt(i);
-  buf[str.length] = 0;
+  // Copy codes directly (Fast & Native Endian). JavaScript strings are already stored as UTF-16 sequences internally.
+  for (let i = 0; i < str.length; i++) {
+    buf[i] = str.charCodeAt(i);
+  }
+  // Return the byte view (required for Deno FFI)
   return new Uint8Array(buf.buffer);
 }
