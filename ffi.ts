@@ -154,9 +154,46 @@ interface OdbcSymbols {
     | SQLRETURN.SQL_INVALID_HANDLE
   >;
 
-  SQLDisconnect(handle: Deno.PointerValue): Promise<number>;
+  /**
+   * `SQLDisconnect` closes the connection associated with a specific connection handle.
+   *
+   * ```cpp
+   * SQLRETURN SQLDisconnect(
+   *      SQLHDBC     ConnectionHandle);
+   * ```
+   *
+   * @param handle Connection handle.
+   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_ERROR`, `SQL_INVALID_HANDLE`, or `SQL_STILL_EXECUTING`.
+   */
+  SQLDisconnect(
+    connectionHandle: Deno.PointerValue,
+  ): Promise<
+    | SQLRETURN.SQL_SUCCESS
+    | SQLRETURN.SQL_SUCCESS_WITH_INFO
+    | SQLRETURN.SQL_ERROR
+    | SQLRETURN.SQL_INVALID_HANDLE
+    | SQLRETURN.SQL_STILL_EXECUTING
+  >;
 
-  SQLFreeHandle(recNumber: number, handle: Deno.PointerValue): Promise<number>;
+  /**
+   * `SQLFreeHandle` frees resources associated with a specific environment, connection, statement, or descriptor handle.
+   *
+   * ```cpp
+   * SQLRETURN SQLFreeHandle(
+   *      SQLSMALLINT   HandleType,
+   *      SQLHANDLE     Handle);
+   * ```
+   *
+   * @param handleType The type of handle to be freed by `SQLFreeHandle`. Must be one of the following values: `SQL_HANDLE_DBC`, `SQL_HANDLE_DESC`, `SQL_HANDLE_ENV`, `SQL_HANDLE_STMT`.
+   * @param handle The handle to be freed.
+   * @returns `SQL_SUCCESS`, `SQL_ERROR`, or `SQL_INVALID_HANDLE`.
+   */
+  SQLFreeHandle(
+    handleType: number,
+    handle: Deno.PointerValue,
+  ): Promise<
+    SQLRETURN.SQL_SUCCESS | SQLRETURN.SQL_ERROR | SQLRETURN.SQL_INVALID_HANDLE
+  >;
 
   /**
    * SQLExecDirect executes a preparable statement, using the current values of the parameter marker variables if any parameters exist in the statement. SQLExecDirect is the fastest way to submit a SQL statement for one-time execution.
@@ -188,7 +225,22 @@ interface OdbcSymbols {
     | SQLRETURN.SQL_PARAM_DATA_AVAILABLE
   >;
 
-  SQLRowCount(handle1: Deno.PointerValue, handle2: Deno.PointerValue): number;
+  /**
+   * `SQLRowCount` returns the number of rows affected by an `UPDATE`, `INSERT`, or `DELETE` statement; an `SQL_ADD`, `SQL_UPDATE_BY_BOOKMARK`, or `SQL_DELETE_BY_BOOKMARK` operation in `SQLBulkOperations`; or an `SQL_UPDATE` or `SQL_DELETE` operation in `SQLSetPos`.
+   *
+   * @param statementHandle Statement handle.
+   * @param rowCountPtr Points to a buffer in which to return a row count. For `UPDATE`, `INSERT`, and `DELETE` statements, for the `SQL_ADD`, `SQL_UPDATE_BY_BOOKMARK`, and `SQL_DELETE_BY_BOOKMARK` operations in `SQLBulkOperations`, and for the `SQL_UPDATE` or `SQL_DELETE` operations in `SQLSetPos`, the value returned in `*RowCountPtr` is either the number of rows affected by the request or `-1` if the number of affected rows is not available.
+   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_ERROR`, or `SQL_INVALID_HANDLE`.
+   */
+  SQLRowCount(
+    statementHandle: Deno.PointerValue,
+    rowCountPtr: BufferSource,
+  ): Promise<
+    | SQLRETURN.SQL_SUCCESS
+    | SQLRETURN.SQL_SUCCESS_WITH_INFO
+    | SQLRETURN.SQL_ERROR
+    | SQLRETURN.SQL_INVALID_HANDLE
+  >;
 }
 
 const dylib = Deno.dlopen(libPath, {
@@ -198,7 +250,7 @@ const dylib = Deno.dlopen(libPath, {
       "pointer", // SQLHANDLE <- in
       "buffer", // SQLHANDLE * -> out
     ],
-    result: "i16", // SQLRETURN: signed short int
+    result: "i16", // SQLRETURN
     nonblocking: true,
   },
   SQLDriverConnectW: {
@@ -212,7 +264,7 @@ const dylib = Deno.dlopen(libPath, {
       "pointer", // SQLSMALLINT * -> out (always NULL, so using pointer instead of buffer)
       "u16", // SQLUSMALLINT <- in
     ],
-    result: "i16", // SQLRETURN: signed short int
+    result: "i16", // SQLRETURN
     nonblocking: true,
   },
   SQLGetDiagRecW: {
@@ -226,23 +278,40 @@ const dylib = Deno.dlopen(libPath, {
       "i16", // SQLSMALLINT <- in
       "buffer", // SQLSMALLINT * -> out
     ],
-    result: "i16", // SQLRETURN: signed short int
+    result: "i16", // SQLRETURN
     nonblocking: true,
   },
-  SQLDisconnect: { parameters: ["pointer"], result: "i16", nonblocking: true },
+  SQLDisconnect: {
+    parameters: [
+      "pointer", // SQLHDBC <- in
+    ],
+    result: "i16", // SQLRETURN
+    nonblocking: true,
+  },
   SQLFreeHandle: {
-    parameters: ["i16", "pointer"],
-    result: "i16",
+    parameters: [
+      "i16", // HandleType <- in
+      "pointer", // SQLHANDLE <- in
+    ],
+    result: "i16", // SQLRETURN
     nonblocking: true,
   },
   SQLExecDirectW: {
-    parameters: ["pointer", "buffer", "i32"],
-    result: "i16",
+    parameters: [
+      "pointer", // SQLHSTMT <- in
+      "buffer", // SQLWCHAR * <- in
+      "i32", // SQLINTEGER -> out
+    ],
+    result: "i16", // SQLRETURN
     nonblocking: true,
   },
   SQLRowCount: {
-    parameters: ["pointer", "pointer"],
-    result: "i16",
+    parameters: [
+      "pointer", // SQLHSTMT <- in
+      "buffer", // SQLLEN * -> out
+    ],
+    result: "i16", // SQLRETURN
+    nonblocking: true,
   },
 });
 
@@ -276,7 +345,7 @@ export async function allocHandle(
     status !== SQLRETURN.SQL_SUCCESS &&
     status !== SQLRETURN.SQL_SUCCESS_WITH_INFO
   ) {
-    throw new Error(`SQLAllocHandle failed (Type: ${handleType})`);
+    throw new Error(`SQLAllocHandle failed: ${SQLRETURN[status]}`);
   }
 
   const handleAddress = outHandleBuf[0];
@@ -291,11 +360,25 @@ export async function allocHandle(
   return Deno.UnsafePointer.create(handleAddress);
 }
 
+/**
+ * Establishes a connection to a driver and a data source using a connection string.
+ *
+ * This function wraps `SQLDriverConnectW`. It uses `SQL_DRIVER_NOPROMPT`, meaning
+ * the connection string must contain all necessary information (DSN, User, Password, etc.)
+ * to connect without user interaction. If the string is insufficient, the connection
+ * will fail rather than prompting the user with a dialog.
+ *
+ * @param connStr The full connection string (e.g., `"driver={ODBC Driver 18 for SQL Server};server=127.0.0.1;uid=sa;pwd=Test123$;encrypt=yes;trustServerCertificate=yes;"`.
+ * @param dbcHandle A valid Connection Handle allocated via `SQLAllocHandle`.
+ * @throws If the connection fails. The error message will contain the specific SQL state and diagnostic message retrieved from the driver.
+ * @returns Resolves when the connection is successfully established.
+ */
 export async function driverConnect(
-  connectionString: string,
+  connStr: string,
   dbcHandle: Deno.PointerValue,
 ): Promise<void> {
-  const connStrEncoded = strToUtf16(connectionString);
+  const connStrEncoded = strToUtf16(connStr);
+
   const ret = await odbcLib.SQLDriverConnectW(
     dbcHandle,
     null,
@@ -306,6 +389,7 @@ export async function driverConnect(
     null,
     SQL_DRIVER_NOPROMPT,
   );
+
   if (
     ret !== SQLRETURN.SQL_SUCCESS &&
     ret !== SQLRETURN.SQL_SUCCESS_WITH_INFO
@@ -318,12 +402,22 @@ export async function driverConnect(
   }
 }
 
+/**
+ * Executes a SQL statement directly without prior preparation.
+ *
+ * This function wraps `SQLExecDirectW`. It is the fastest way to execute a statement once.
+ *
+ * @param rawSql The SQL statement to execute.
+ * @param stmtHandle A valid Statement Handle.
+ * @throws If execution fails. The error includes the specific ODBC diagnostic message and the SQL that caused the failure.
+ * @returns Resolves if execution is successful or if the operation simply affected zero rows (`SQL_NO_DATA`).
+ */
 export async function execDirect(
-  sql: string,
+  rawSql: string,
   stmtHandle: Deno.PointerValue,
 ): Promise<void> {
-  const sqlEncoded = strToUtf16(sql);
-  const ret = await odbcLib.SQLExecDirectW(stmtHandle, sqlEncoded, SQL_NTS);
+  const rawSqlEncoded = strToUtf16(rawSql);
+  const ret = await odbcLib.SQLExecDirectW(stmtHandle, rawSqlEncoded, SQL_NTS);
 
   if (
     ret !== SQLRETURN.SQL_SUCCESS &&
@@ -334,31 +428,45 @@ export async function execDirect(
       `Execution Error: ${await getOdbcError(
         HandleType.SQL_HANDLE_STMT,
         stmtHandle,
-      )}\nSQL: ${sql}`,
+      )}\nSQL: ${rawSql}`,
     );
   }
 }
 
-export async function rowCount(handle: Deno.PointerValue): Promise<number> {
+/**
+ * Returns the number of rows affected by an `UPDATE`, `INSERT`, or `DELETE` statement.
+ *
+ * @param stmtHandle The statement handle (HSTMT) on which the operation was performed.
+ * @returns The count of affected rows.
+ * @throws If the API call fails.
+ */
+export async function rowCount(stmtHandle: Deno.PointerValue): Promise<bigint> {
   const rowCountBuf = new BigUint64Array(1);
 
-  const ret = await odbcLib.SQLRowCount(
-    handle,
-    Deno.UnsafePointer.of(rowCountBuf),
+  const status = await odbcLib.SQLRowCount(
+    stmtHandle,
+    rowCountBuf,
   );
 
   if (
-    ret !== SQLRETURN.SQL_SUCCESS &&
-    ret !== SQLRETURN.SQL_SUCCESS_WITH_INFO
+    status !== SQLRETURN.SQL_SUCCESS &&
+    status !== SQLRETURN.SQL_SUCCESS_WITH_INFO
   ) {
-    throw new Error(`SQLRowCount failed (${ret})`);
+    throw new Error(`SQLRowCount failed: ${SQLRETURN[status]}`);
   }
 
-  const rowCount = Number(rowCountBuf[0]);
-
-  return rowCount;
+  return rowCountBuf[0];
 }
 
+/**
+ * Retrieves all diagnostic records (errors and warnings) associated with a specific handle.
+ *
+ * This function loops through available diagnostic records (`SQLGetDiagRecW`) until `SQL_NO_DATA` is returned. It captures the SQL State, Native Error Code, and the human-readable Message Text for each record.
+ *
+ * @param handleType The type of handle (e.g., `SQL_HANDLE_ENV`, `SQL_HANDLE_DBC`, `SQL_HANDLE_STMT`).
+ * @param handle The pointer to the handle to inspect.
+ * @returns A single string containing all error messages joined by newlines. Returns `"Unknown ODBC Error"` if no records are found.
+ */
 export async function getOdbcError(
   handleType: HandleType,
   handle: Deno.PointerValue,
@@ -372,7 +480,7 @@ export async function getOdbcError(
     const msgBuf = new Uint16Array(512);
     const msgLenBuf = new Int16Array(1);
 
-    const ret = await odbcLib.SQLGetDiagRecW(
+    const status = await odbcLib.SQLGetDiagRecW(
       handleType,
       handle,
       i,
@@ -383,7 +491,7 @@ export async function getOdbcError(
       msgLenBuf,
     );
 
-    if (ret === SQLRETURN.SQL_NO_DATA) break;
+    if (status === SQLRETURN.SQL_NO_DATA) break;
 
     const decoder = new TextDecoder("utf-16le");
     const state = decoder.decode(stateBuf).slice(0, 5);
@@ -399,15 +507,13 @@ export async function getOdbcError(
 /**
  * Converts a standard JavaScript string into a raw block of memory that a C program can read.
  *
- * @param str
+ * @param str Input string to a C function.
  */
 export function strToUtf16(str: string): Uint8Array<ArrayBuffer> {
   // Create a 16-bit array (native C "unsigned short" array). +1 for the null terminator \0
   const buf = new Uint16Array(str.length + 1);
-  // Copy codes directly (Fast & Native Endian). JavaScript strings are already stored as UTF-16 sequences internally.
   for (let i = 0; i < str.length; i++) {
-    buf[i] = str.charCodeAt(i);
+    buf[i] = str.charCodeAt(i); // JS strings are already stored as UTF-16 sequences internally.
   }
-  // Return the byte view (required for Deno FFI)
-  return new Uint8Array(buf.buffer);
+  return new Uint8Array(buf.buffer); // Return the byte view (required for Deno FFI)
 }
