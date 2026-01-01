@@ -1,6 +1,6 @@
 import { OdbcDialectConfig, OdbcDriver } from "./driver.ts";
 
-import { MssqlDialect, MssqlDialectConfig, type Driver } from "@kysely/kysely";
+import { type Driver, MssqlDialect, MssqlDialectConfig } from "@kysely/kysely";
 
 /**
  * MS SQL Server dialect that uses the Microsoft ODBC Driver for SQL Server

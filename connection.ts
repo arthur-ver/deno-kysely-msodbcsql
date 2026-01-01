@@ -4,7 +4,7 @@ import {
   QueryResult,
   TransactionSettings,
 } from "@kysely/kysely";
-import { odbcLib, allocHandle, driverConnect, HandleType } from "./ffi.ts";
+import { allocHandle, driverConnect, HandleType, odbcLib } from "./ffi.ts";
 import { OdbcRequest } from "./request.ts";
 
 export class OdbcConnection implements DatabaseConnection {
@@ -22,7 +22,7 @@ export class OdbcConnection implements DatabaseConnection {
   async connect(): Promise<this> {
     this.#dbcHandle = await allocHandle(
       HandleType.SQL_HANDLE_DBC,
-      this.#envHandle
+      this.#envHandle,
     );
     try {
       await driverConnect(this.#connectionString, this.#dbcHandle);
@@ -45,7 +45,7 @@ export class OdbcConnection implements DatabaseConnection {
 
   async *streamQuery<O>(
     compiledQuery: CompiledQuery,
-    chunkSize: number
+    chunkSize: number,
   ): AsyncIterableIterator<QueryResult<O>> {
     if (!this.#dbcHandle) {
       throw new Error("Connection is closed");

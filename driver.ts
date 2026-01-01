@@ -4,10 +4,10 @@ import type { PoolOptions } from "tarn/dist/Pool";
 import {
   DatabaseConnection,
   Driver,
-  TransactionSettings,
   MssqlDialectConfig,
+  TransactionSettings,
 } from "@kysely/kysely";
-import { HandleType, odbcLib, allocHandle } from "./ffi.ts";
+import { allocHandle, HandleType, odbcLib } from "./ffi.ts";
 import { OdbcConnection } from "./connection.ts";
 
 export interface OdbcDialectConfig
@@ -42,7 +42,7 @@ export class OdbcDriver implements Driver {
         }
         const connection = new OdbcConnection(
           this.#config.odbc.connectionString,
-          this.#envHandle
+          this.#envHandle,
         );
         await connection.connect();
         return connection;
@@ -64,7 +64,7 @@ export class OdbcDriver implements Driver {
 
   async beginTransaction(
     connection: OdbcConnection,
-    settings: TransactionSettings
+    settings: TransactionSettings,
   ): Promise<void> {
     await connection.beginTransaction(settings);
   }

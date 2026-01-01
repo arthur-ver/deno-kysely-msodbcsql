@@ -1,10 +1,10 @@
 import { CompiledQuery, QueryResult } from "@kysely/kysely";
 import {
-  odbcLib,
   allocHandle,
   execDirect,
-  rowCount,
   HandleType,
+  odbcLib,
+  rowCount,
 } from "./ffi.ts";
 
 export class OdbcRequest<O> {
@@ -23,7 +23,7 @@ export class OdbcRequest<O> {
   constructor(
     compiledQuery: CompiledQuery,
     dbcHandle: Deno.PointerValue,
-    streamChunkSize?: number
+    streamChunkSize?: number,
   ) {
     this.#compiledQuery = compiledQuery;
     this.#dbcHandle = dbcHandle;
@@ -38,7 +38,7 @@ export class OdbcRequest<O> {
   }> {
     this.#stmtHandle = await allocHandle(
       HandleType.SQL_HANDLE_STMT,
-      this.#dbcHandle
+      this.#dbcHandle,
     );
 
     try {

@@ -61,7 +61,7 @@ interface OdbcSymbols {
   SQLAllocHandle(
     handleType: HandleType,
     inputHandle: Deno.PointerValue,
-    outputHandlePtr: BufferSource
+    outputHandlePtr: BufferSource,
   ): Promise<
     | SQLRETURN.SQL_SUCCESS
     | SQLRETURN.SQL_SUCCESS_WITH_INFO
@@ -102,7 +102,7 @@ interface OdbcSymbols {
     outConnectionString: Deno.PointerValue,
     bufferLength: number,
     stringLength2Ptr: Deno.PointerValue,
-    driverCompletion: number
+    driverCompletion: number,
   ): Promise<
     | SQLRETURN.SQL_SUCCESS
     | SQLRETURN.SQL_SUCCESS_WITH_INFO
@@ -145,7 +145,7 @@ interface OdbcSymbols {
     nativeErrorPtr: BufferSource,
     messageText: BufferSource,
     bufferLength: number,
-    textLengthPtr: BufferSource
+    textLengthPtr: BufferSource,
   ): Promise<
     | SQLRETURN.SQL_SUCCESS
     | SQLRETURN.SQL_SUCCESS_WITH_INFO
@@ -176,7 +176,7 @@ interface OdbcSymbols {
   SQLExecDirectW(
     statementHandle: Deno.PointerValue,
     statementText: BufferSource,
-    textLength: number
+    textLength: number,
   ): Promise<
     | SQLRETURN.SQL_SUCCESS
     | SQLRETURN.SQL_SUCCESS_WITH_INFO
@@ -262,14 +262,14 @@ export const odbcLib = dylib.symbols as OdbcSymbols;
  */
 export async function allocHandle(
   handleType: HandleType,
-  parentHandle: Deno.PointerValue
+  parentHandle: Deno.PointerValue,
 ): Promise<Deno.PointerValue> {
   const outHandleBuf = new BigUint64Array(1);
 
   const status = await odbcLib.SQLAllocHandle(
     handleType,
     parentHandle,
-    outHandleBuf
+    outHandleBuf,
   );
 
   if (
@@ -282,7 +282,9 @@ export async function allocHandle(
   const handleAddress = outHandleBuf[0];
   if (handleAddress === 0n) {
     throw new Error(
-      `SQLAllocHandle returned invalid (null) handle (Type: ${HandleType[handleType]})`
+      `SQLAllocHandle returned invalid (null) handle (Type: ${
+        HandleType[handleType]
+      })`,
     );
   }
 
@@ -291,7 +293,7 @@ export async function allocHandle(
 
 export async function driverConnect(
   connectionString: string,
-  dbcHandle: Deno.PointerValue
+  dbcHandle: Deno.PointerValue,
 ): Promise<void> {
   const connStrEncoded = strToUtf16(connectionString);
   const ret = await odbcLib.SQLDriverConnectW(
@@ -302,7 +304,7 @@ export async function driverConnect(
     null,
     0,
     null,
-    SQL_DRIVER_NOPROMPT
+    SQL_DRIVER_NOPROMPT,
   );
   if (
     ret !== SQLRETURN.SQL_SUCCESS &&
@@ -310,7 +312,7 @@ export async function driverConnect(
   ) {
     const errorDetail = await getOdbcError(
       HandleType.SQL_HANDLE_DBC,
-      dbcHandle
+      dbcHandle,
     );
     throw new Error(`ODBC Connection Failed:\n${errorDetail}`);
   }
@@ -318,7 +320,7 @@ export async function driverConnect(
 
 export async function execDirect(
   sql: string,
-  stmtHandle: Deno.PointerValue
+  stmtHandle: Deno.PointerValue,
 ): Promise<void> {
   const sqlEncoded = strToUtf16(sql);
   const ret = await odbcLib.SQLExecDirectW(stmtHandle, sqlEncoded, SQL_NTS);
@@ -331,8 +333,8 @@ export async function execDirect(
     throw new Error(
       `Execution Error: ${await getOdbcError(
         HandleType.SQL_HANDLE_STMT,
-        stmtHandle
-      )}\nSQL: ${sql}`
+        stmtHandle,
+      )}\nSQL: ${sql}`,
     );
   }
 }
@@ -342,7 +344,7 @@ export async function rowCount(handle: Deno.PointerValue): Promise<number> {
 
   const ret = await odbcLib.SQLRowCount(
     handle,
-    Deno.UnsafePointer.of(rowCountBuf)
+    Deno.UnsafePointer.of(rowCountBuf),
   );
 
   if (
@@ -359,7 +361,7 @@ export async function rowCount(handle: Deno.PointerValue): Promise<number> {
 
 export async function getOdbcError(
   handleType: HandleType,
-  handle: Deno.PointerValue
+  handle: Deno.PointerValue,
 ): Promise<string> {
   const errors: string[] = [];
   let i = 1;
@@ -378,7 +380,7 @@ export async function getOdbcError(
       nativeErrBuf,
       msgBuf,
       msgBuf.length,
-      msgLenBuf
+      msgLenBuf,
     );
 
     if (ret === SQLRETURN.SQL_NO_DATA) break;
