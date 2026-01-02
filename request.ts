@@ -1,13 +1,15 @@
 import { CompiledQuery, QueryResult } from "@kysely/kysely";
 import {
   allocHandle,
+  bindParameter,
   execDirect,
-  getOdbcParameter,
   HandleType,
   odbcLib,
+  ParameterType,
   rowCount,
   SQL_NULL_DATA,
-  SQL_PARAM_INPUT,
+  strToUtf16,
+  ValueType,
 } from "./ffi.ts";
 
 export class OdbcRequest<O> {
@@ -34,13 +36,8 @@ export class OdbcRequest<O> {
       this.#dbcHandle,
     );
 
-    let i = 1;
-    for (const param of this.#compiledQuery.parameters) {
-      await this.#bindParam(param, i);
-      i++;
-    }
-
     try {
+      await this.#bindParams(this.#compiledQuery.parameters);
       await execDirect(this.#compiledQuery.sql, this.#stmtHandle);
       const numAffectedRows = await rowCount(this.#stmtHandle);
       const rows: O[] = [];
@@ -61,7 +58,7 @@ export class OdbcRequest<O> {
       };*/
       return {} as any;
     } finally {
-      await this.#freeStmt();
+      await this.#cleanup();
     }
   }
 
@@ -88,57 +85,158 @@ export class OdbcRequest<O> {
     }*/
   }
 
-  async #freeStmt() {
+  async #cleanup(): Promise<void> {
+    await this.#freeStmt();
+    this.#preventGC = [];
+  }
+
+  async #freeStmt(): Promise<void> {
     await odbcLib.SQLFreeHandle(HandleType.SQL_HANDLE_STMT, this.#stmtHandle);
     this.#stmtHandle = null;
   }
 
-  async #bindParam(value: unknown, i: number): Promise<void> {
-    if (value === null || typeof value === "undefined" || value === undefined) {
-      const nullBuf = new Uint8Array();
-      const lenInd = new BigInt64Array([BigInt(SQL_NULL_DATA)]);
+  async #bindParams(params: CompiledQuery["parameters"]): Promise<void> {
+    let i = 1;
+    for (const val of params) {
+      if (
+        val === null || typeof val === "undefined" || val === undefined
+      ) {
+        const nullBuf = new Uint8Array();
+        const lenIndBuf = new BigInt64Array([BigInt(SQL_NULL_DATA)]);
 
-      await odbcLib.SQLBindParameter(
+        await bindParameter(
+          this.#stmtHandle,
+          i,
+          ValueType.DUMMY,
+          ParameterType.DUMMY,
+          0n,
+          0,
+          nullBuf,
+          0n,
+          lenIndBuf,
+        );
+
+        this.#preventGC.push(nullBuf);
+        this.#preventGC.push(lenIndBuf);
+
+        i++;
+        continue;
+      }
+
+      const param = this.#getOdbcParameter(val);
+
+      const bufLen = BigInt(param.buf.byteLength);
+      const lenIndBuf = new BigInt64Array([bufLen]);
+
+      await bindParameter(
         this.#stmtHandle,
         i,
-        SQL_PARAM_INPUT,
-        1, // dummy
-        1, // dummy
-        0n,
-        0,
-        nullBuf,
-        0n,
-        lenInd,
+        param.cType,
+        param.sqlType,
+        param.columnSize,
+        param.decimalDigits,
+        param.buf,
+        bufLen,
+        lenIndBuf,
       );
 
-      this.#preventGC.push(nullBuf);
-      this.#preventGC.push(lenInd);
+      this.#preventGC.push(param.buf);
+      this.#preventGC.push(lenIndBuf);
 
-      return;
+      i++;
+    }
+  }
+
+  /**
+   * Determines the appropriate ODBC C-Type, SQL-Type, and binary buffer representation for a given JavaScript value.
+   *
+   * This function automatically maps JavaScript types to their most appropriate ODBC equivalents:
+   * - **Integers (32-bit)**: Maps to `SQL_INTEGER` (`SQL_C_SLONG`).
+   * - **Integers (64-bit)**: Maps to `SQL_BIGINT` (`SQL_C_SBIGINT`).
+   * - **Floats**: Maps to `SQL_FLOAT` (`SQL_C_DOUBLE`).
+   * - **Booleans**: Maps to `SQL_BIT` (`SQL_C_BIT`).
+   * - **Strings**: Maps to `SQL_WVARCHAR` (`SQL_C_WCHAR`) using UTF-16 encoding.
+   *
+   * It calculates the correct `columnSize` and `decimalDigits` required by `SQLBindParameter`.
+   * For fixed-width types (Integer, Float, Bit), these values are set to `0` as they are
+   * ignored by the driver. For variable-width types (String), `columnSize` is set to the
+   * character length.
+   *
+   * @param value The JavaScript value to bind to the SQL parameter.
+   * @returns An object containing the ODBC type definitions and the binary data buffer.
+   * @throws If the value type is not supported (e.g., Object, Symbol, Function).
+   *
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/column-size?view=sql-server-ver17}
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/decimal-digits?view=sql-server-ver17}
+   */
+  #getOdbcParameter(val: unknown): {
+    cType: ValueType;
+    sqlType: ParameterType;
+    buf:
+      | Int32Array<ArrayBuffer>
+      | BigInt64Array<ArrayBuffer>
+      | Uint8Array<ArrayBuffer>
+      | Float64Array<ArrayBuffer>;
+    columnSize: bigint;
+    decimalDigits: number;
+  } {
+    if (
+      typeof val === "bigint" ||
+      (typeof val === "number" && val % 1 === 0)
+    ) {
+      // 32-bit integer
+      if (val >= -2147483648 && val <= 2147483647) {
+        return {
+          cType: ValueType.SQL_C_SLONG,
+          sqlType: ParameterType.SQL_INTEGER,
+          buf: new Int32Array([Number(val)]),
+          columnSize: 0n, // ignored by SQLBindParameter for this data type
+          decimalDigits: 0, // ignored by SQLBindParameter for this data type
+        };
+      } else {
+        // 64-bit integer (BigInt)
+        return {
+          cType: ValueType.SQL_C_SBIGINT,
+          sqlType: ParameterType.SQL_BIGINT,
+          buf: new BigInt64Array([BigInt(val)]),
+          columnSize: 0n, // ignored by SQLBindParameter for this data type
+          decimalDigits: 0, // ignored by SQLBindParameter for this data type
+        };
+      }
     }
 
-    const param = getOdbcParameter(value);
+    if (typeof val === "number") {
+      return {
+        cType: ValueType.SQL_C_DOUBLE,
+        sqlType: ParameterType.SQL_FLOAT,
+        buf: new Float64Array([val]),
+        columnSize: 0n, // ignored by SQLBindParameter for this data type
+        decimalDigits: 0, // ignored by SQLBindParameter for this data type
+      };
+    }
 
-    const bufLen = BigInt(param.buf.byteLength);
-    const lenInd = new BigInt64Array([bufLen]);
+    if (typeof val === "boolean") {
+      return {
+        cType: ValueType.SQL_C_BIT,
+        sqlType: ParameterType.SQL_BIT,
+        buf: new Uint8Array([val ? 1 : 0]),
+        columnSize: 0n, // ignored by SQLBindParameter for this data type
+        decimalDigits: 0, // ignored by SQLBindParameter for this data type
+      };
+    }
 
-    const columnSize = 0n; // TODO
-    const decimalDigits = 0; // TODO
+    if (typeof val === "string") {
+      return {
+        cType: ValueType.SQL_C_WCHAR,
+        sqlType: ParameterType.SQL_WVARCHAR,
+        buf: strToUtf16(val),
+        columnSize: BigInt(val.length), // charLength
+        decimalDigits: 0, // ignored by SQLBindParameter for this data type
+      };
+    }
 
-    await odbcLib.SQLBindParameter(
-      this.#stmtHandle,
-      i,
-      SQL_PARAM_INPUT,
-      param.cType,
-      param.sqlType,
-      columnSize,
-      decimalDigits,
-      param.buf,
-      bufLen,
-      lenInd,
-    );
+    throw new Error(`Unsupported data type: ${val} (Type ${typeof val})`);
 
-    this.#preventGC.push(param.buf);
-    this.#preventGC.push(lenInd);
+    // TODO: implement Dates + Buffers
   }
 }
