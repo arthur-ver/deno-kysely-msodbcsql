@@ -50,7 +50,11 @@ export class OdbcDriver implements Driver {
       destroy: async (connection) => {
         await connection.destroy();
       },
-      validate: undefined, // TODO: https://github.com/kysely-org/kysely/blob/master/src/dialect/mssql/mssql-driver.ts#L63
+      // @ts-ignore `tarn` accepts a function that returns a promise here, but
+      // the types are not aligned and it type errors.
+      validate: this.#config.validateConnections
+        ? (connection) => connection.validate()
+        : undefined,
     });
   }
 
@@ -81,11 +85,7 @@ export class OdbcDriver implements Driver {
   // TODO: async rollbackToSavepoint()
 
   async releaseConnection(connection: OdbcConnection): Promise<void> {
-    if (
-      this.#config.resetConnectionsOnRelease
-      // NOTE: deprecated code removed
-      // || this.#config.tedious.resetConnectionOnRelease
-    ) {
+    if (this.#config.resetConnectionsOnRelease) {
       await connection.reset();
     }
 

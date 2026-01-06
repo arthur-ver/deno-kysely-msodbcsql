@@ -4,7 +4,13 @@ import {
   QueryResult,
   TransactionSettings,
 } from "@kysely/kysely";
-import { allocHandle, driverConnect, HandleType, odbcLib } from "./ffi.ts";
+import {
+  allocHandle,
+  driverConnect,
+  HandleType,
+  odbcLib,
+  rollbackTransaction,
+} from "./ffi.ts";
 import { OdbcRequest } from "./request.ts";
 
 export class OdbcConnection implements DatabaseConnection {
@@ -83,7 +89,6 @@ export class OdbcConnection implements DatabaseConnection {
   async validate(): Promise<boolean> {
     if (
       this.#hasSocketError ||
-      this.#isConnectionClosed() ||
       this.#dbcHandle === null
     ) {
       return false;
@@ -91,31 +96,13 @@ export class OdbcConnection implements DatabaseConnection {
 
     const compiledQuery = CompiledQuery.raw("select 1");
     const request = new OdbcRequest<unknown>(compiledQuery, this.#dbcHandle);
-    try {
-      await request.execute();
-    } catch {
-      return false;
-    }
+    await request.execute();
 
     return true;
   }
 
-  // TODO: implement isConnectionClosed()
-  #isConnectionClosed(): boolean {
-    return false;
-    //return "closed" in this.#connection && Boolean(this.#connection.closed);
-  }
-
   async reset(): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      /*this.#connection.reset((error) => {
-        if (error) {
-          return reject(error);
-        }
-
-        resolve();
-      });*/
-      resolve();
-    });
+    if (this.#dbcHandle === null) return;
+    await rollbackTransaction(this.#dbcHandle);
   }
 }

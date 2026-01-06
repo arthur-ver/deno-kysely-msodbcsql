@@ -49,6 +49,8 @@ export const SQL_NULL_DATA = -1;
 export const SQL_DRIVER_NOPROMPT = 0;
 export const SQL_NTS = -3;
 
+export const SQL_ROLLBACK = 1;
+
 let libPath: string;
 
 switch (Deno.build.os) {
@@ -425,6 +427,33 @@ interface OdbcSymbols {
     | SQLRETURN.SQL_ERROR
     | SQLRETURN.SQL_INVALID_HANDLE
   >;
+
+  /**
+   * `SQLEndTran` requests a commit or rollback operation for all active operations on all statements associated with a connection. SQLEndTran can also request that a commit or rollback operation be performed for all connections associated with an environment.
+   *
+   * ```cpp
+   * SQLRETURN SQLEndTran(
+   *      SQLSMALLINT   HandleType,
+   *      SQLHANDLE     Handle,
+   *      SQLSMALLINT   CompletionType);
+   * ```
+   *
+   * @param handleType Handle type identifier. Contains either `SQL_HANDLE_ENV` (if Handle is an environment handle) or `SQL_HANDLE_DBC` (if Handle is a connection handle).
+   * @param handle The handle, of the type indicated by HandleType, indicating the scope of the transaction.
+   * @param completionType One of the following two values: `SQL_COMMIT`, `SQL_ROLLBACK`.
+   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_ERROR`, `SQL_INVALID_HANDLE`, or `SQL_STILL_EXECUTING`.
+   */
+  SQLEndTran(
+    handleType: HandleType,
+    handle: Deno.PointerValue,
+    completionType: number,
+  ): Promise<
+    | SQLRETURN.SQL_SUCCESS
+    | SQLRETURN.SQL_SUCCESS_WITH_INFO
+    | SQLRETURN.SQL_ERROR
+    | SQLRETURN.SQL_INVALID_HANDLE
+    | SQLRETURN.SQL_STILL_EXECUTING
+  >;
 }
 
 const dylib = Deno.dlopen(libPath, {
@@ -462,6 +491,15 @@ const dylib = Deno.dlopen(libPath, {
   SQLFetch: {
     parameters: [
       "pointer", // SQLHSTMT <- in
+    ],
+    result: "i16",
+    nonblocking: true,
+  },
+  SQLEndTran: {
+    parameters: [
+      "u16", // SQLSMALLINT <- in
+      "pointer", // SQLHANDLE <- in
+      "u16", // SQLSMALLINT <- in
     ],
     result: "i16",
     nonblocking: true,
@@ -928,6 +966,30 @@ export async function fetch(
   }
 
   return status;
+}
+
+export async function rollbackTransaction(
+  dbcHandle: Deno.PointerValue,
+): Promise<void> {
+  const status = await odbcLib.SQLEndTran(
+    HandleType.SQL_HANDLE_DBC,
+    dbcHandle,
+    SQL_ROLLBACK,
+  );
+
+  if (
+    status !== SQLRETURN.SQL_SUCCESS &&
+    status !== SQLRETURN.SQL_SUCCESS_WITH_INFO
+  ) {
+    throw new Error(
+      `SQLEndTran failed: ${
+        getOdbcError(
+          HandleType.SQL_HANDLE_DBC,
+          dbcHandle,
+        )
+      }\n`,
+    );
+  }
 }
 
 /**
