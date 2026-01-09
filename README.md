@@ -49,6 +49,8 @@ const dialect = new MssqlOdbcDialect({
 const db = new Kysely()<Database>({ dialect });
 ```
 
+> **Note:** `--allow-ffi` permission is required.
+
 ## Supported SQL Data Types
 
 The following table details how SQL column types are mapped to JavaScript
