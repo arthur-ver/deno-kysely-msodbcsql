@@ -1,22 +1,15 @@
 import { CompiledQuery, QueryResult } from "@kysely/kysely";
 import {
-  allocHandle,
-  bindCol,
-  bindParameter,
   bufToStr,
-  describeCol,
-  execDirect,
-  fetch,
-  getOdbcError,
   HandleType,
-  odbcLib,
+  type OdbcLib,
   ParameterType,
   SQL_NTS,
   SQL_NULL_DATA,
   SQLRETURN,
   strToBuf,
   ValueType,
-} from "./ffi.ts";
+} from "./odbc.ts";
 
 const MAX_BIND_SIZE = 65536; // 64kb
 
@@ -48,6 +41,7 @@ type ParamBinding = {
 };
 
 export class OdbcRequest<R> {
+  readonly #odbcLib: OdbcLib;
   readonly #compiledQuery: CompiledQuery;
   readonly #dbcHandle: Deno.PointerValue;
   readonly #rows: R[] = [];
@@ -57,9 +51,11 @@ export class OdbcRequest<R> {
   #stmtHandle: Deno.PointerValue = null;
 
   constructor(
+    odbcLib: OdbcLib,
     compiledQuery: CompiledQuery,
     dbcHandle: Deno.PointerValue,
   ) {
+    this.#odbcLib = odbcLib;
     this.#compiledQuery = compiledQuery;
     this.#dbcHandle = dbcHandle;
   }
@@ -68,7 +64,7 @@ export class OdbcRequest<R> {
     numAffectedRows: bigint;
     rows: R[];
   }> {
-    this.#stmtHandle = allocHandle(
+    this.#stmtHandle = this.#odbcLib.allocHandle(
       HandleType.SQL_HANDLE_STMT,
       this.#dbcHandle,
     );
@@ -76,7 +72,7 @@ export class OdbcRequest<R> {
     try {
       this.#bindParams();
 
-      const { colCount, numAffectedRows } = await execDirect(
+      const { colCount, numAffectedRows } = await this.#odbcLib.execDirect(
         this.#compiledQuery.sql,
         this.#stmtHandle,
       );
@@ -99,7 +95,7 @@ export class OdbcRequest<R> {
   }
 
   async *stream(chunkSize: number): AsyncIterableIterator<QueryResult<R>> {
-    this.#stmtHandle = allocHandle(
+    this.#stmtHandle = this.#odbcLib.allocHandle(
       HandleType.SQL_HANDLE_STMT,
       this.#dbcHandle,
     );
@@ -107,7 +103,7 @@ export class OdbcRequest<R> {
     try {
       this.#bindParams();
 
-      const { colCount } = await execDirect(
+      const { colCount } = await this.#odbcLib.execDirect(
         this.#compiledQuery.sql,
         this.#stmtHandle,
       );
@@ -139,7 +135,7 @@ export class OdbcRequest<R> {
   }
 
   #cleanup(): void {
-    odbcLib.SQLFreeHandle(HandleType.SQL_HANDLE_STMT, this.#stmtHandle);
+    this.#odbcLib.freeHandle(HandleType.SQL_HANDLE_STMT, this.#stmtHandle);
     this.#stmtHandle = null;
     this.#paramBindings.clear();
     this.#colBindings.clear();
@@ -150,7 +146,7 @@ export class OdbcRequest<R> {
     for (const val of this.#compiledQuery.parameters) {
       const odbcParam = this.#getParamBinding(val);
 
-      bindParameter(
+      this.#odbcLib.bindParameter(
         this.#stmtHandle,
         i,
         odbcParam.cType,
@@ -169,14 +165,14 @@ export class OdbcRequest<R> {
 
   #bindCols(colCount: number) {
     for (let i = 1; i <= colCount; i++) {
-      const desc = describeCol(this.#stmtHandle, i);
+      const desc = this.#odbcLib.describeCol(this.#stmtHandle, i);
 
       if (desc.columnSize === 0n || desc.columnSize > MAX_BIND_SIZE) {
         throw new Error(`Unable to bind column ${desc}!`);
       }
       const binding = this.#getColBinding(desc.dataType, desc.columnSize);
 
-      bindCol(
+      this.#odbcLib.bindCol(
         this.#stmtHandle,
         i,
         binding.cType,
@@ -188,28 +184,6 @@ export class OdbcRequest<R> {
     }
   }
 
-  /**
-   * Determines the appropriate ODBC C-Type, SQL-Type, and binary buffer representation for a given JavaScript value.
-   *
-   * This function automatically maps JavaScript types to their most appropriate ODBC equivalents:
-   * - **Integers (32-bit)**: Maps to `SQL_INTEGER` (`SQL_C_SLONG`).
-   * - **Integers (64-bit)**: Maps to `SQL_BIGINT` (`SQL_C_SBIGINT`).
-   * - **Floats**: Maps to `SQL_FLOAT` (`SQL_C_DOUBLE`).
-   * - **Booleans**: Maps to `SQL_BIT` (`SQL_C_BIT`).
-   * - **Strings**: Maps to `SQL_WVARCHAR` (`SQL_C_WCHAR`) using UTF-16 encoding.
-   *
-   * It calculates the correct `columnSize` and `decimalDigits` required by `SQLBindParameter`.
-   * For fixed-width types (Integer, Float, Bit), these values are set to `0` as they are
-   * ignored by the driver. For variable-width types (String), `columnSize` is set to the
-   * character length.
-   *
-   * @param value The JavaScript value to bind to the SQL parameter.
-   * @returns An object containing the ODBC type definitions and the binary data buffer.
-   * @throws If the value type is not supported (e.g., Object, Symbol, Function).
-   *
-   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/column-size?view=sql-server-ver17}
-   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/decimal-digits?view=sql-server-ver17}
-   */
   #getParamBinding(val: unknown): ParamBinding {
     // NULL
     if (val === null || typeof val === "undefined" || val === undefined) {
@@ -303,7 +277,6 @@ export class OdbcRequest<R> {
   #getColBinding(dataType: number, columnSize: bigint): ColBinding {
     const createInd = () => new BigInt64Array(1);
 
-    // 32-bit integer
     if (dataType === ParameterType.SQL_INTEGER) {
       return {
         cType: ValueType.SQL_C_SLONG,
@@ -313,7 +286,6 @@ export class OdbcRequest<R> {
       };
     }
 
-    // 64-bit integer (BigInt)
     if (dataType === ParameterType.SQL_BIGINT) {
       return {
         cType: ValueType.SQL_C_SBIGINT,
@@ -465,7 +437,7 @@ export class OdbcRequest<R> {
 
   async *#fetchRow(): AsyncGenerator<R> {
     while (true) {
-      const status = await fetch(this.#stmtHandle);
+      const status = await this.#odbcLib.fetch(this.#stmtHandle);
 
       if (
         status === SQLRETURN.SQL_SUCCESS ||
@@ -483,7 +455,7 @@ export class OdbcRequest<R> {
 
       if (status === SQLRETURN.SQL_ERROR) {
         throw new Error(`SQLFetch failed: ${
-          getOdbcError(
+          this.#odbcLib.getOdbcError(
             HandleType.SQL_HANDLE_STMT,
             this.#stmtHandle,
           )
