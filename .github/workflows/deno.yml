@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: Test1234$
+        ports:
+          - 1433:1433
+
+    steps:
+      - name: Setup repo
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: stable
+      
+      - name: Verify formatting
+        run: deno fmt --check
+        
+      - name: Run linter
+        run: deno lint
+
+      - name: Install SQL Server ODBC Driver 18
+        run: |
+          curl -sSL -O https://packages.microsoft.com/config/ubuntu/$(grep VERSION_ID /etc/os-release | cut -d '"' -f 2)/packages-microsoft-prod.deb
+          sudo dpkg -i packages-microsoft-prod.deb
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+
+      - name: Set ODBC library path
+        run: |
+          echo "MSODBC_LIB=$(find /opt/microsoft/msodbcsql18/lib64 -name "libmsodbcsql-*.so*" | head -n 1)" >> $GITHUB_ENV
+
+      - name: Run tests
+        env:
+          MSODBC_LIB: ${{ env.MSODBC_LIB }}
+        run: deno test -A
