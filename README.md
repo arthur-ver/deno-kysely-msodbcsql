@@ -66,9 +66,7 @@ const db = new Kysely()<Database>({ dialect });
 
 ### Parameters (Input)
 
-JavaScript parameter types are mapped to the following SQL types:
-
-| JS Input                             | ODBC C Type            | Mapped SQL Type  | Notes                                                     |
+| JS Type                              | ODBC C Type            | Mapped SQL Type  | Notes                                                     |
 | :----------------------------------- | :--------------------- | :--------------- | :-------------------------------------------------------- |
 | **`null` / `undefined`**             | -                      | -                | Inserted as `NULL`                                        |
 | **`boolean`**                        | `SQL_C_BIT`            | `BIT`            | -                                                         |
