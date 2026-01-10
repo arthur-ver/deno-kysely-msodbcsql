@@ -11,7 +11,7 @@ import {
   ValueType,
 } from "./odbc.ts";
 
-const MAX_BIND_SIZE = 65536; // 64kb
+const MAX_BIND_SIZE = 65536n; // 64kb
 
 type ColBinding = {
   cType: ValueType;
@@ -167,10 +167,12 @@ export class OdbcRequest<R> {
     for (let i = 1; i <= colCount; i++) {
       const desc = this.#odbcLib.describeCol(this.#stmtHandle, i);
 
-      if (desc.columnSize === 0n || desc.columnSize > MAX_BIND_SIZE) {
-        throw new Error(`Unable to bind column ${desc}!`);
+      let allocSize = desc.columnSize;
+      if (allocSize === 0n || allocSize > MAX_BIND_SIZE) {
+        allocSize = MAX_BIND_SIZE;
       }
-      const binding = this.#getColBinding(desc.dataType, desc.columnSize);
+
+      const binding = this.#getColBinding(desc.dataType, allocSize);
 
       this.#odbcLib.bindCol(
         this.#stmtHandle,
