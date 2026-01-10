@@ -1,10 +1,20 @@
 import {
   CompiledQuery,
   DatabaseConnection,
+  IsolationLevel,
   QueryResult,
   TransactionSettings,
 } from "@kysely/kysely";
-import { HandleType, type OdbcLib } from "./odbc.ts";
+import {
+  HandleType,
+  type OdbcLib,
+  SQL_ATTR_AUTOCOMMIT,
+  SQL_ATTR_TXN_ISOLATION,
+  SQL_AUTOCOMMIT_OFF,
+  SQL_AUTOCOMMIT_ON,
+  TxCompletionType,
+  TxIsolationLevel,
+} from "./odbc.ts";
 import { OdbcRequest } from "./request.ts";
 
 export class OdbcConnection implements DatabaseConnection {
@@ -78,12 +88,52 @@ export class OdbcConnection implements DatabaseConnection {
     yield* request.stream(chunkSize);
   }
 
-  //deno-lint-ignore no-unused-vars
-  async beginTransaction(settings: TransactionSettings): Promise<void> {} // TODO: implement this
+  // deno-lint-ignore require-await
+  async beginTransaction(settings: TransactionSettings): Promise<void> {
+    if (!this.#dbcHandle) {
+      throw new Error("Connection is closed");
+    }
 
-  async commitTransaction(): Promise<void> {} // TODO: implement this
+    if (settings.isolationLevel) {
+      this.#setIsolationLevel(settings.isolationLevel);
+    }
 
-  async rollbackTransaction(): Promise<void> {} // TODO: implement this
+    this.#odbcLib.setConnectAttr(
+      this.#dbcHandle,
+      SQL_ATTR_AUTOCOMMIT,
+      Deno.UnsafePointer.create(SQL_AUTOCOMMIT_OFF),
+    );
+  }
+
+  async commitTransaction(): Promise<void> {
+    if (!this.#dbcHandle) {
+      throw new Error("Connection is closed");
+    }
+
+    try {
+      await this.#odbcLib.endTransaction(
+        this.#dbcHandle,
+        TxCompletionType.SQL_COMMIT,
+      );
+    } finally {
+      this.#cleanupTransactionState();
+    }
+  }
+
+  async rollbackTransaction(): Promise<void> {
+    if (!this.#dbcHandle) {
+      throw new Error("Connection is closed");
+    }
+
+    try {
+      await this.#odbcLib.endTransaction(
+        this.#dbcHandle,
+        TxCompletionType.SQL_ROLLBACK,
+      );
+    } finally {
+      this.#cleanupTransactionState();
+    }
+  }
 
   async destroy(): Promise<void> {
     if (this.#dbcHandle === null) return;
@@ -119,6 +169,45 @@ export class OdbcConnection implements DatabaseConnection {
 
   async reset(): Promise<void> {
     if (this.#dbcHandle === null) return;
-    await this.#odbcLib.rollbackTransaction(this.#dbcHandle);
+    await this.rollbackTransaction();
+  }
+
+  #cleanupTransactionState(): void {
+    this.#setIsolationLevel("read committed");
+    this.#odbcLib.setConnectAttr(
+      this.#dbcHandle,
+      SQL_ATTR_AUTOCOMMIT,
+      Deno.UnsafePointer.create(SQL_AUTOCOMMIT_ON),
+    );
+  }
+
+  #setIsolationLevel(level: IsolationLevel): void {
+    let isolationLevel: TxIsolationLevel;
+
+    switch (level) {
+      case "read uncommitted":
+        isolationLevel = TxIsolationLevel.SQL_TRANSACTION_READ_UNCOMMITTED;
+        break;
+      case "read committed":
+        isolationLevel = TxIsolationLevel.SQL_TRANSACTION_READ_COMMITTED;
+        break;
+      case "repeatable read":
+        isolationLevel = TxIsolationLevel.SQL_TRANSACTION_REPEATABLE_READ;
+        break;
+      case "serializable":
+        isolationLevel = TxIsolationLevel.SQL_TRANSACTION_SERIALIZABLE;
+        break;
+      // TODO: SQL_TXN_SS_SNAPSHOT
+      default:
+        throw new Error(`Unsupported isolation level: ${level}`);
+    }
+
+    const isolationLevelPtr = Deno.UnsafePointer.create(BigInt(isolationLevel));
+
+    this.#odbcLib.setConnectAttr(
+      this.#dbcHandle,
+      SQL_ATTR_TXN_ISOLATION,
+      isolationLevelPtr,
+    );
   }
 }

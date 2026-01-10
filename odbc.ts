@@ -66,7 +66,24 @@ export const SQL_NULL_DATA = -1;
 export const SQL_DRIVER_NOPROMPT = 0;
 export const SQL_NTS = -3;
 
-export const SQL_ROLLBACK = 1;
+export const SQL_ATTR_TXN_ISOLATION = 108;
+export const SQL_ATTR_AUTOCOMMIT = 102;
+
+export const SQL_AUTOCOMMIT_OFF = 0n;
+export const SQL_AUTOCOMMIT_ON = 1n;
+export const SQL_IS_INTEGER = -6;
+
+export enum TxIsolationLevel {
+  SQL_TRANSACTION_READ_UNCOMMITTED = 1,
+  SQL_TRANSACTION_READ_COMMITTED = 2,
+  SQL_TRANSACTION_REPEATABLE_READ = 4,
+  SQL_TRANSACTION_SERIALIZABLE = 8,
+}
+
+export enum TxCompletionType {
+  SQL_COMMIT = 0,
+  SQL_ROLLBACK = 1,
+}
 
 const libDefinitions = {
   // --- ASYNC (I/O BOUND) ---
@@ -95,7 +112,7 @@ const libDefinitions = {
     parameters: [
       "pointer", // SQLHSTMT <- in
       "buffer", // SQLWCHAR * <- in
-      "i32", // SQLINTEGER -> out
+      "i32", // SQLINTEGER <- in
     ],
     result: "i16", // SQLRETURN
     nonblocking: true,
@@ -199,6 +216,15 @@ const libDefinitions = {
     ],
     result: "i16",
   },
+  SQLSetConnectAttrW: {
+    parameters: [
+      "pointer", // SQLHDBC <- in
+      "i32", // SQLINTEGER <- in
+      "pointer", // SQLPOINTER <- in
+      "i32", // SQLINTEGER <- in
+    ],
+    result: "i16",
+  },
 } as const;
 
 export class OdbcLib {
@@ -210,18 +236,6 @@ export class OdbcLib {
     this.#symbols = this.#dylib.symbols;
   }
 
-  /**
-   * Allocates a new ODBC handle of the specified type.
-   *
-   * This wrapper simplifies `SQLAllocHandle` by automatically creating the required
-   * output buffer, checking the status code for errors, and converting the resulting
-   * memory address into a usable `Deno.PointerValue` object.
-   *
-   * @param handleType The type of handle to allocate (e.g., `SQL_HANDLE_ENV`, `SQL_HANDLE_DBC`).
-   * @param parentHandle The parent context for the new handle. Pass `null` if allocating an Environment (`ENV`) handle.
-   * @returns Newly allocated handle pointer.
-   * @throws If the ODBC call returns a non-success status (e.g., `SQL_ERROR`) or if the driver returns a null pointer.
-   */
   allocHandle(
     handleType: HandleType,
     parentHandle: Deno.PointerValue,
@@ -253,10 +267,6 @@ export class OdbcLib {
     return Deno.UnsafePointer.create(handleAddress);
   }
 
-  /**
-   * @param handleType
-   * @param handle
-   */
   freeHandle(handleType: HandleType, handle: Deno.PointerValue): void {
     const status = this.#symbols.SQLFreeHandle(handleType, handle);
 
@@ -267,19 +277,6 @@ export class OdbcLib {
     }
   }
 
-  /**
-   * Establishes a connection to a driver and a data source using a connection string.
-   *
-   * This function wraps `SQLDriverConnectW`. It uses `SQL_DRIVER_NOPROMPT`, meaning
-   * the connection string must contain all necessary information (DSN, User, Password, etc.)
-   * to connect without user interaction. If the string is insufficient, the connection
-   * will fail rather than prompting the user with a dialog.
-   *
-   * @param connStr The full connection string (e.g., `"driver={ODBC Driver 18 for SQL Server};server=127.0.0.1;uid=sa;pwd=Test123$;encrypt=yes;trustServerCertificate=yes;"`.
-   * @param dbcHandle A valid Connection Handle allocated via `SQLAllocHandle`.
-   * @throws If the connection fails. The error message will contain the specific SQL state and diagnostic message retrieved from the driver.
-   * @returns Resolves when the connection is successfully established.
-   */
   async driverConnect(
     connStr: string,
     dbcHandle: Deno.PointerValue,
@@ -324,31 +321,21 @@ export class OdbcLib {
     }
   }
 
-  /**
-   * Executes a SQL statement directly without prior preparation.
-   *
-   * This function wraps `SQLExecDirectW`. It is the fastest way to execute a statement once.
-   *
-   * @param rawSql The SQL statement to execute.
-   * @param stmtHandle A valid Statement Handle.
-   * @throws If execution fails. The error includes the specific ODBC diagnostic message and the SQL that caused the failure.
-   * @returns Resolves to number of columns in the result set
-   */
   async execDirect(
     rawSql: string,
     stmtHandle: Deno.PointerValue,
   ): Promise<{ colCount: number; numAffectedRows: bigint }> {
     const rawSqlEncoded = strToBuf(rawSql);
-    const ret = await this.#symbols.SQLExecDirectW(
+    const status = await this.#symbols.SQLExecDirectW(
       stmtHandle,
       rawSqlEncoded,
       SQL_NTS,
     );
 
     if (
-      ret !== SQLRETURN.SQL_SUCCESS &&
-      ret !== SQLRETURN.SQL_SUCCESS_WITH_INFO &&
-      ret !== SQLRETURN.SQL_NO_DATA
+      status !== SQLRETURN.SQL_SUCCESS &&
+      status !== SQLRETURN.SQL_SUCCESS_WITH_INFO &&
+      status !== SQLRETURN.SQL_NO_DATA
     ) {
       throw new Error(
         `Execution Error: ${
@@ -366,13 +353,6 @@ export class OdbcLib {
     };
   }
 
-  /**
-   * Returns the number of rows affected by an `UPDATE`, `INSERT`, or `DELETE` statement.
-   *
-   * @param stmtHandle The statement handle (HSTMT) on which the operation was performed.
-   * @returns The count of affected rows.
-   * @throws If the API call fails.
-   */
   rowCount(stmtHandle: Deno.PointerValue): bigint {
     const rowCountBuf = new BigInt64Array(1);
 
@@ -391,15 +371,6 @@ export class OdbcLib {
     return rowCountBuf[0];
   }
 
-  /**
-   * Retrieves all diagnostic records (errors and warnings) associated with a specific handle.
-   *
-   * This function loops through available diagnostic records (`SQLGetDiagRecW`) until `SQL_NO_DATA` is returned. It captures the SQL State, Native Error Code, and the human-readable Message Text for each record.
-   *
-   * @param handleType The type of handle (e.g., `SQL_HANDLE_ENV`, `SQL_HANDLE_DBC`, `SQL_HANDLE_STMT`).
-   * @param handle The pointer to the handle to inspect.
-   * @returns A single string containing all error messages joined by newlines. Returns `"Unknown ODBC Error"` if no records are found.
-   */
   getOdbcError(
     handleType: HandleType,
     handle: Deno.PointerValue,
@@ -436,21 +407,6 @@ export class OdbcLib {
     return errors.length > 0 ? errors.join("\n") : "Unknown ODBC Error";
   }
 
-  /**
-   * Wrapper for `SQLBindParameter` that binds a buffer to a parameter marker in the SQL statement.
-   *
-   * @param stmtHandle Statement handle.
-   * @param i The parameter index number (ordered sequentially starting at 1).
-   * @param cType The C data type identifier (e.g., `SQL_C_SLONG`, `SQL_C_WCHAR`) describing the format of `buf`.
-   * @param sqlType The SQL data type identifier (e.g., `SQL_INTEGER`, `SQL_WVARCHAR`) describing the destination column.
-   * @param columnSize The precision or column size of the corresponding parameter marker. **Ignored for fixed-width types like Integer/Float; required for Strings/Decimals**.
-   * @param decimalDigits The decimal digits (scale) of the corresponding parameter marker.
-   * @param buf The buffer containing the actual parameter data.
-   * @param bufLen The length of the `buf` buffer in bytes.
-   * @param indLenBuf A pointer to a buffer (usually `BigInt64Array`) containing the data length or null indicator.
-   * @returns Resolves if binding is successful.
-   * @throws Throws a detailed ODBC error message if `SQLBindParameter` fails.
-   */
   bindParameter(
     stmtHandle: Deno.PointerValue,
     i: number,
@@ -490,13 +446,6 @@ export class OdbcLib {
     }
   }
 
-  /**
-   * Wrapper for `SQLNumResultCols` that returns the number of columns in the result set for a prepared or executed statement.
-   *
-   * @param stmtHandle The handle to the statement.
-   * @returns A promise that resolves to the number of columns in the result set.
-   * @throws If the ODBC function call fails
-   */
   numResultCols(
     stmtHandle: Deno.PointerValue,
   ): number {
@@ -618,13 +567,14 @@ export class OdbcLib {
     return status;
   }
 
-  async rollbackTransaction(
+  async endTransaction(
     dbcHandle: Deno.PointerValue,
+    completionType: TxCompletionType,
   ): Promise<void> {
     const status = await this.#symbols.SQLEndTran(
       HandleType.SQL_HANDLE_DBC,
       dbcHandle,
-      SQL_ROLLBACK,
+      completionType,
     );
 
     if (
@@ -638,6 +588,34 @@ export class OdbcLib {
             dbcHandle,
           )
         }\n`,
+      );
+    }
+  }
+
+  setConnectAttr(
+    handle: Deno.PointerValue,
+    attribute: number,
+    valuePtr: Deno.PointerValue,
+    stringLength: number = SQL_IS_INTEGER,
+  ) {
+    const status = this.#symbols.SQLSetConnectAttrW(
+      handle,
+      attribute,
+      valuePtr,
+      stringLength,
+    );
+
+    if (
+      status !== SQLRETURN.SQL_SUCCESS &&
+      status !== SQLRETURN.SQL_SUCCESS_WITH_INFO
+    ) {
+      throw new Error(
+        `SQLSetConnectAttrW Error: ${
+          this.getOdbcError(
+            HandleType.SQL_HANDLE_DBC,
+            handle,
+          )
+        }`,
       );
     }
   }
@@ -658,10 +636,7 @@ interface OdbcSymbols {
    *       SQLHANDLE *   OutputHandlePtr)
    * ```
    *
-   * @param handleType The type of handle to be allocated by SQLAllocHandle.
-   * @param inputHandle The input handle in whose context the new handle is to be allocated. If HandleType is `SQL_HANDLE_ENV`, this is `SQL_NULL_HANDLE`. If HandleType is `SQL_HANDLE_DBC`, this must be an environment handle, and if it is `SQL_HANDLE_STMT` or `SQL_HANDLE_DESC`, it must be a connection handle.
-   * @param outputHandlePtr Pointer to a buffer in which to return the handle to the newly allocated data structure.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_INVALID_HANDLE`, or `SQL_ERROR`.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlallochandle-function?view=sql-server-ver17}
    */
   SQLAllocHandle(
     handleType: HandleType,
@@ -672,6 +647,22 @@ interface OdbcSymbols {
     | SQLRETURN.SQL_SUCCESS_WITH_INFO
     | SQLRETURN.SQL_INVALID_HANDLE
     | SQLRETURN.SQL_ERROR;
+
+  /**
+   * `SQLFreeHandle` frees resources associated with a specific environment, connection, statement, or descriptor handle.
+   *
+   * ```cpp
+   * SQLRETURN SQLFreeHandle(
+   *      SQLSMALLINT   HandleType,
+   *      SQLHANDLE     Handle);
+   * ```
+   *
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlfreehandle-function?view=sql-server-ver17}
+   */
+  SQLFreeHandle(
+    handleType: number,
+    handle: Deno.PointerValue,
+  ): SQLRETURN.SQL_SUCCESS | SQLRETURN.SQL_ERROR | SQLRETURN.SQL_INVALID_HANDLE;
 
   /**
    * `SQLDriverConnectW` is an alternative to SQLConnect. It supports data sources that require more connection information than the three arguments in SQLConnect, dialog boxes to prompt the user for all connection information, and data sources that are not defined in the system information. For more information, see Connecting with SQLDriverConnect.
@@ -688,15 +679,7 @@ interface OdbcSymbols {
    *      SQLUSMALLINT    DriverCompletion);
    * ```
    *
-   * @param connectionHandle Connection handle.
-   * @param windowHandle Window handle. The application can pass the handle of the parent window, if applicable, or a null pointer if either the window handle is not applicable or SQLDriverConnect will not present any dialog boxes.
-   * @param inConnectionString A full connection string (see the syntax in "Comments"), a partial connection string, or an empty string.
-   * @param stringLength1 Length of *InConnectionString, in characters if the string is Unicode, or bytes if string is ANSI or DBCS.
-   * @param outConnectionString Pointer to a buffer for the completed connection string. Upon successful connection to the target data source, this buffer contains the completed connection string. Applications should allocate at least 1,024 characters for this buffer. If OutConnectionString is NULL, StringLength2Ptr will still return the total number of characters (excluding the null-termination character for character data) available to return in the buffer pointed to by OutConnectionString.
-   * @param bufferLength Length of the *OutConnectionString buffer, in characters.
-   * @param stringLength2Ptr Pointer to a buffer in which to return the total number of characters (excluding the null-termination character) available to return in *OutConnectionString. If the number of characters available to return is greater than or equal to BufferLength, the completed connection string in *OutConnectionString is truncated to BufferLength minus the length of a null-termination character.
-   * @param driverCompletion Flag that indicates whether the Driver Manager or driver must prompt for more connection information: `SQL_DRIVER_PROMPT`, `SQL_DRIVER_COMPLETE`, `SQL_DRIVER_COMPLETE_REQUIRED`, or `SQL_DRIVER_NOPROMPT`.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_NO_DATA`, `SQL_ERROR`, `SQL_INVALID_HANDLE`, or `SQL_STILL_EXECUTING`.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqldriverconnect-function?view=sql-server-ver17}
    */
   SQLDriverConnectW(
     connectionHandle: Deno.PointerValue,
@@ -717,6 +700,26 @@ interface OdbcSymbols {
   >;
 
   /**
+   * `SQLDisconnect` closes the connection associated with a specific connection handle.
+   *
+   * ```cpp
+   * SQLRETURN SQLDisconnect(
+   *      SQLHDBC     ConnectionHandle);
+   * ```
+   *
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqldisconnect-function?view=sql-server-ver17}
+   */
+  SQLDisconnect(
+    connectionHandle: Deno.PointerValue,
+  ): Promise<
+    | SQLRETURN.SQL_SUCCESS
+    | SQLRETURN.SQL_SUCCESS_WITH_INFO
+    | SQLRETURN.SQL_ERROR
+    | SQLRETURN.SQL_INVALID_HANDLE
+    | SQLRETURN.SQL_STILL_EXECUTING
+  >;
+
+  /**
    * `SQLGetDiagRecW` returns the current values of multiple fields of a diagnostic record that contains error, warning, and status information. Unlike `SQLGetDiagField`, which returns one diagnostic field per call, `SQLGetDiagRec` returns several commonly used fields of a diagnostic record, including the `SQLSTATE`, the native error code, and the diagnostic message text.
    *
    * ```cpp
@@ -731,15 +734,7 @@ interface OdbcSymbols {
    *      SQLSMALLINT *   TextLengthPtr);
    * ```
    *
-   * @param handleType A handle type identifier that describes the type of handle for which diagnostics are required. Must be one of the following: `SQL_HANDLE_DBC`, `SQL_HANDLE_DESC`, `SQL_HANDLE_ENV`, `SQL_HANDLE_STMT`
-   * @param handle A handle for the diagnostic data structure, of the type indicated by `HandleType`. If `HandleType` is `SQL_HANDLE_ENV`, Handle can be either a shared or an unshared environment handle.
-   * @param recNumber Indicates the status record from which the application seeks information. Status records are numbered from 1.
-   * @param sqlState Pointer to a buffer in which to return a five-character `SQLSTATE` code (and terminating `NULL`) for the diagnostic record `RecNumber`. The first two characters indicate the class; the next three indicate the subclass. This information is contained in the `SQL_DIAG_SQLSTATE` diagnostic field. For more information, see `SQLSTATEs`.
-   * @param nativeErrorPtr Pointer to a buffer in which to return the native error code, specific to the data source. This information is contained in the `SQL_DIAG_NATIVE` diagnostic field.
-   * @param messageText Pointer to a buffer in which to return the diagnostic message text string. This information is contained in the `SQL_DIAG_MESSAGE_TEXT` diagnostic field. For the format of the string, see Diagnostic Messages. If MessageText is `NULL`, `TextLengthPtr` will still return the total number of characters (excluding the null-termination character for character data) available to return in the buffer pointed to by `MessageText`.
-   * @param bufferLength Length of the `*MessageText` buffer in characters. There is no maximum length of the diagnostic message text.
-   * @param textLengthPtr Pointer to a buffer in which to return the total number of characters (excluding the number of characters required for the null-termination character) available to return in `*MessageText`. If the number of characters available to return is greater than `BufferLength`, the diagnostic message text in `*MessageText` is truncated to `BufferLength` minus the length of a null-termination character.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_ERROR`, `SQL_NO_DATA`, or `SQL_INVALID_HANDLE`.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlgetdiagrec-function?view=sql-server-ver17}
    */
   SQLGetDiagRecW(
     handleType: HandleType,
@@ -758,45 +753,6 @@ interface OdbcSymbols {
     | SQLRETURN.SQL_INVALID_HANDLE;
 
   /**
-   * `SQLDisconnect` closes the connection associated with a specific connection handle.
-   *
-   * ```cpp
-   * SQLRETURN SQLDisconnect(
-   *      SQLHDBC     ConnectionHandle);
-   * ```
-   *
-   * @param handle Connection handle.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_ERROR`, `SQL_INVALID_HANDLE`, or `SQL_STILL_EXECUTING`.
-   */
-  SQLDisconnect(
-    connectionHandle: Deno.PointerValue,
-  ): Promise<
-    | SQLRETURN.SQL_SUCCESS
-    | SQLRETURN.SQL_SUCCESS_WITH_INFO
-    | SQLRETURN.SQL_ERROR
-    | SQLRETURN.SQL_INVALID_HANDLE
-    | SQLRETURN.SQL_STILL_EXECUTING
-  >;
-
-  /**
-   * `SQLFreeHandle` frees resources associated with a specific environment, connection, statement, or descriptor handle.
-   *
-   * ```cpp
-   * SQLRETURN SQLFreeHandle(
-   *      SQLSMALLINT   HandleType,
-   *      SQLHANDLE     Handle);
-   * ```
-   *
-   * @param handleType The type of handle to be freed by `SQLFreeHandle`. Must be one of the following values: `SQL_HANDLE_DBC`, `SQL_HANDLE_DESC`, `SQL_HANDLE_ENV`, `SQL_HANDLE_STMT`.
-   * @param handle The handle to be freed.
-   * @returns `SQL_SUCCESS`, `SQL_ERROR`, or `SQL_INVALID_HANDLE`.
-   */
-  SQLFreeHandle(
-    handleType: number,
-    handle: Deno.PointerValue,
-  ): SQLRETURN.SQL_SUCCESS | SQLRETURN.SQL_ERROR | SQLRETURN.SQL_INVALID_HANDLE;
-
-  /**
    * SQLExecDirect executes a preparable statement, using the current values of the parameter marker variables if any parameters exist in the statement. SQLExecDirect is the fastest way to submit a SQL statement for one-time execution.
    *
    * ```cpp
@@ -806,10 +762,7 @@ interface OdbcSymbols {
    *      SQLINTEGER   TextLength);
    * ```
    *
-   * @param statementHandle Statement handle.
-   * @param statementText SQL statement to be executed.
-   * @param textLength Length of *StatementText in characters.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_NEED_DATA`, `SQL_STILL_EXECUTING`, `SQL_ERROR`, `SQL_NO_DATA`, `SQL_INVALID_HANDLE`, or `SQL_PARAM_DATA_AVAILABLE`.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver17}
    */
   SQLExecDirectW(
     statementHandle: Deno.PointerValue,
@@ -829,9 +782,13 @@ interface OdbcSymbols {
   /**
    * `SQLRowCount` returns the number of rows affected by an `UPDATE`, `INSERT`, or `DELETE` statement; an `SQL_ADD`, `SQL_UPDATE_BY_BOOKMARK`, or `SQL_DELETE_BY_BOOKMARK` operation in `SQLBulkOperations`; or an `SQL_UPDATE` or `SQL_DELETE` operation in `SQLSetPos`.
    *
-   * @param statementHandle Statement handle.
-   * @param rowCountPtr Points to a buffer in which to return a row count. For `UPDATE`, `INSERT`, and `DELETE` statements, for the `SQL_ADD`, `SQL_UPDATE_BY_BOOKMARK`, and `SQL_DELETE_BY_BOOKMARK` operations in `SQLBulkOperations`, and for the `SQL_UPDATE` or `SQL_DELETE` operations in `SQLSetPos`, the value returned in `*RowCountPtr` is either the number of rows affected by the request or `-1` if the number of affected rows is not available.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_ERROR`, or `SQL_INVALID_HANDLE`.
+   * ```cpp
+   * SQLRETURN SQLRowCount(
+   *       SQLHSTMT   StatementHandle,
+   *       SQLLEN *   RowCountPtr);
+   * ```
+   *
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlrowcount-function?view=sql-server-ver17}
    */
   SQLRowCount(
     statementHandle: Deno.PointerValue,
@@ -859,17 +816,7 @@ interface OdbcSymbols {
    *       SQLLEN *        StrLen_or_IndPtr);
    * ```
    *
-   * @param statementHandle Statement handle.
-   * @param parameterNumber Parameter number, ordered sequentially in increasing parameter order, starting at 1.
-   * @param inputOutputType The type of the parameter.
-   * @param valueType The C data type of the parameter.
-   * @param parameterType The SQL data type of the parameter.
-   * @param columnSize The size of the column or expression of the corresponding parameter marker.
-   * @param decimalDigits The decimal digits of the column or expression of the corresponding parameter marker.
-   * @param parameterValuePtr A pointer to a buffer for the parameter's data.
-   * @param bufferLength Length of the ParameterValuePtr buffer in bytes.
-   * @param StrLen_or_IndPtr A pointer to a buffer for the parameter's length.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_ERROR`, or `SQL_INVALID_HANDLE`.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlbindparameter-function?view=sql-server-ver17}
    */
   SQLBindParameter(
     statementHandle: Deno.PointerValue,
@@ -897,9 +844,7 @@ interface OdbcSymbols {
    *      SQLSMALLINT *   ColumnCountPtr);
    * ```
    *
-   * @param statementHandle Statement handle.
-   * @param columnCountPtr Pointer to a buffer in which to return the number of columns in the result set. This count does not include a bound bookmark column.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_STILL_EXECUTING`, `SQL_ERROR`, or `SQL_INVALID_HANDLE`.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlnumresultcols-function?view=sql-server-ver17}
    */
   SQLNumResultCols(
     statementHandle: Deno.PointerValue,
@@ -927,16 +872,7 @@ interface OdbcSymbols {
    *       SQLSMALLINT *  NullablePtr);
    * ```
    *
-   * @param statementHandle Statement handle.
-   * @param columnNumber Column number of result data, ordered sequentially in increasing column order, starting at 1. The ColumnNumber argument can also be set to 0 to describe the bookmark column.
-   * @param columnName Pointer to a null-terminated buffer in which to return the column name. This value is read from the SQL_DESC_NAME field of the IRD. If the column is unnamed or the column name cannot be determined, the driver returns an empty string. If ColumnName is NULL, NameLengthPtr will still return the total number of characters (excluding the null-termination character for character data) available to return in the buffer pointed to by ColumnName.
-   * @param bufferLength Length of the *ColumnName buffer, in characters.
-   * @param nameLengthPtr Pointer to a buffer in which to return the total number of characters (excluding the null termination) available to return in *ColumnName. If the number of characters available to return is greater than or equal to BufferLength, the column name in *ColumnName is truncated to BufferLength minus the length of a null-termination character.
-   * @param dataTypePtr Pointer to a buffer in which to return the SQL data type of the column. This value is read from the SQL_DESC_CONCISE_TYPE field of the IRD. This will be one of the values in SQL Data Types, or a driver-specific SQL data type. If the data type cannot be determined, the driver returns SQL_UNKNOWN_TYPE. In ODBC 3.x, SQL_TYPE_DATE, SQL_TYPE_TIME, or SQL_TYPE_TIMESTAMP is returned in *DataTypePtr for date, time, or timestamp data, respectively; in ODBC 2.x, SQL_DATE, SQL_TIME, or SQL_TIMESTAMP is returned. The Driver Manager performs the required mappings when an ODBC 2.x application is working with an ODBC 3.x driver or when an ODBC 3.x application is working with an ODBC 2.x driver. When ColumnNumber is equal to 0 (for a bookmark column), SQL_BINARY is returned in *DataTypePtr for variable-length bookmarks. (SQL_INTEGER is returned if bookmarks are used by an ODBC 3.x application working with an ODBC 2.x driver or by an ODBC 2.x application working with an ODBC 3.x driver.)
-   * @param columnSizePtr Pointer to a buffer in which to return the size (in characters) of the column on the data source. If the column size cannot be determined, the driver returns 0. For more information on column size, see Column Size, Decimal Digits, Transfer Octet Length, and Display Size in Appendix D: Data Types.
-   * @param decimalDigitsPtr Pointer to a buffer in which to return the number of decimal digits of the column on the data source. If the number of decimal digits cannot be determined or is not applicable, the driver returns 0. For more information on decimal digits, see Column Size, Decimal Digits, Transfer Octet Length, and Display Size in Appendix D: Data Types.
-   * @param nullablePtr Pointer to a buffer in which to return a value that indicates whether the column allows NULL values. This value is read from the SQL_DESC_NULLABLE field of the IRD. The value is one of the following: SQL_NO_NULLS, SQL_NULLABLE, SQL_NULLABLE_UNKNOWN
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_STILL_EXECUTING`, `SQL_ERROR`, or `SQL_INVALID_HANDLE`.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqldescribecol-function?view=sql-server-ver17}
    */
   SQLDescribeColW(
     statementHandle: Deno.PointerValue,
@@ -968,13 +904,7 @@ interface OdbcSymbols {
    *       SQLLEN *       StrLen_or_IndPtr);
    * ```
    *
-   * @param statementHandle Statement handle.
-   * @param columnNumber Number of the result set column to bind. Columns are numbered in increasing column order starting at 0, where column 0 is the bookmark column. If bookmarks are not used - that is, the SQL_ATTR_USE_BOOKMARKS statement attribute is set to SQL_UB_OFF - then column numbers start at 1.
-   * @param targetType The identifier of the C data type of the *TargetValuePtr buffer. When it is retrieving data from the data source with SQLFetch, SQLFetchScroll, SQLBulkOperations, or SQLSetPos, the driver converts the data to this type; when it sends data to the data source with SQLBulkOperations or SQLSetPos, the driver converts the data from this type. For a list of valid C data types and type identifiers, see the C Data Types section in Appendix D: Data Types.
-   * @param targetValuePtr Pointer to the data buffer to bind to the column. SQLFetch and SQLFetchScroll return data in this buffer. SQLBulkOperations returns data in this buffer when Operation is SQL_FETCH_BY_BOOKMARK; it retrieves data from this buffer when Operation is SQL_ADD or SQL_UPDATE_BY_BOOKMARK. SQLSetPos returns data in this buffer when Operation is SQL_REFRESH; it retrieves data from this buffer when Operation is SQL_UPDATE.
-   * @param bufferLength Length of the *TargetValuePtr buffer in bytes.
-   * @param strLen_or_IndPtr Pointer to the length/indicator buffer to bind to the column. SQLFetch and SQLFetchScroll return a value in this buffer. SQLBulkOperations retrieves a value from this buffer when Operation is SQL_ADD, SQL_UPDATE_BY_BOOKMARK, or SQL_DELETE_BY_BOOKMARK. SQLBulkOperations returns a value in this buffer when Operation is SQL_FETCH_BY_BOOKMARK. SQLSetPos returns a value in this buffer when Operation is SQL_REFRESH; it retrieves a value from this buffer when Operation is SQL_UPDATE.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_ERROR`, or `SQL_INVALID_HANDLE`.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlbindcol-function?view=sql-server-ver17}
    */
   SQLBindCol(
     statementHandle: Deno.PointerValue,
@@ -997,7 +927,7 @@ interface OdbcSymbols {
    *      SQLHSTMT     StatementHandle);
    * ```
    *
-   * @param statementHandle Statement handle.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlfetch-function?view=sql-server-ver17}
    */
   SQLFetch(statementHandle: Deno.PointerValue): Promise<
     | SQLRETURN.SQL_SUCCESS
@@ -1018,15 +948,12 @@ interface OdbcSymbols {
    *      SQLSMALLINT   CompletionType);
    * ```
    *
-   * @param handleType Handle type identifier. Contains either `SQL_HANDLE_ENV` (if Handle is an environment handle) or `SQL_HANDLE_DBC` (if Handle is a connection handle).
-   * @param handle The handle, of the type indicated by HandleType, indicating the scope of the transaction.
-   * @param completionType One of the following two values: `SQL_COMMIT`, `SQL_ROLLBACK`.
-   * @returns `SQL_SUCCESS`, `SQL_SUCCESS_WITH_INFO`, `SQL_ERROR`, `SQL_INVALID_HANDLE`, or `SQL_STILL_EXECUTING`.
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlendtran-function?view=sql-server-ver17}
    */
   SQLEndTran(
     handleType: HandleType,
     handle: Deno.PointerValue,
-    completionType: number,
+    completionType: TxCompletionType,
   ): Promise<
     | SQLRETURN.SQL_SUCCESS
     | SQLRETURN.SQL_SUCCESS_WITH_INFO
@@ -1034,6 +961,30 @@ interface OdbcSymbols {
     | SQLRETURN.SQL_INVALID_HANDLE
     | SQLRETURN.SQL_STILL_EXECUTING
   >;
+
+  /**
+   * `SQLSetConnectAttr` sets attributes that govern aspects of connections.
+   *
+   * ```cpp
+   * SQLRETURN SQLSetConnectAttr(
+   *      SQLHDBC       ConnectionHandle,
+   *      SQLINTEGER    Attribute,
+   *      SQLPOINTER    ValuePtr,
+   *      SQLINTEGER    StringLength);
+   *  ```
+   *
+   * @see {@link https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlsetconnectattr-function?view=sql-server-ver17}
+   */
+  SQLSetConnectAttrW(
+    connectionHandle: Deno.PointerValue,
+    attribute: number,
+    valuePtr: Deno.PointerValue,
+    stringLength: number,
+  ):
+    | SQLRETURN.SQL_SUCCESS
+    | SQLRETURN.SQL_SUCCESS_WITH_INFO
+    | SQLRETURN.SQL_ERROR
+    | SQLRETURN.SQL_INVALID_HANDLE;
 }
 
 const decoder = new TextDecoder("utf-16le");

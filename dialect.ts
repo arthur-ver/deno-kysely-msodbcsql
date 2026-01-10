@@ -23,6 +23,7 @@ import {
  *     },
  *   },
  *   odbc: {
+ *     libPath: "/opt/homebrew/lib/libmsodbcsql.18.dylib",
  *     connString: [
  *       "driver={ODBC Driver 18 for SQL Server}",
  *       "server=127.0.0.1",
