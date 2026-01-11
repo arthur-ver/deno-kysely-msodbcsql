@@ -48,6 +48,9 @@ jobs:
         run: |
           echo "MSODBC_LIB=$(find /opt/microsoft/msodbcsql18/lib64 -name "libmsodbcsql-*.so*" | head -n 1)" >> $GITHUB_ENV
 
+      - name: Install deps
+        run: deno install
+
       - name: Run tests
         env:
           MSODBC_LIB: ${{ env.MSODBC_LIB }}
