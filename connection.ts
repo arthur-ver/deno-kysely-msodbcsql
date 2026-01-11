@@ -139,13 +139,11 @@ export class OdbcConnection implements DatabaseConnection {
     if (this.#dbcHandle === null) return;
 
     try {
-      // just in case we weren't actually connected
       await this.#odbcLib.disconnect(this.#dbcHandle);
-    } catch {
-      /* ignore */
+    } finally {
+      this.#odbcLib.freeHandle(HandleType.SQL_HANDLE_DBC, this.#dbcHandle);
+      this.#dbcHandle = null;
     }
-    this.#odbcLib.freeHandle(HandleType.SQL_HANDLE_DBC, this.#dbcHandle);
-    this.#dbcHandle = null;
   }
 
   async validate(): Promise<boolean> {
