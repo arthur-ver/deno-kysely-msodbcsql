@@ -1,6 +1,6 @@
 import { Generated, Kysely, sql } from "@kysely/kysely";
 import { MssqlOdbcDialect } from "./mod.ts";
-import { assertEquals, assertInstanceOf } from "@std/assert";
+import { assertEquals, assertInstanceOf, assertRejects } from "@std/assert";
 
 interface TestTable {
   id: Generated<number>;
@@ -97,7 +97,7 @@ Deno.test.beforeAll(async () => {
 
 Deno.test("➤ CONNECTION POOL", async (t) => {
   /**
-   * Verifies that the pool can successfully open (or reuse) connections simultaneously
+   * Verifies that the pool can successfully open (or reuse) connections simultaneously.
    */
   await t.step("simultaneous connections", async () => {
     const uniqueSessions = new Set<number>();
@@ -176,6 +176,134 @@ Deno.test("➤ CONNECTION POOL", async (t) => {
       rows[0]?.level,
       2,
       "A recycled connection retained 'Serializable' (4) state instead of resetting to 'ReadCommitted' (2).",
+    );
+  });
+});
+
+Deno.test("➤ TRANSACTIONS", async (t) => {
+  /**
+   * Verifies that data persists after a successful transaction.
+   */
+  await t.step("successful commit", async () => {
+    const col_string = "ACID Commit Test";
+
+    await db.transaction().execute(async (trx) => {
+      await trx
+        .insertInto(TABLE_NAME)
+        .values({
+          col_string,
+        })
+        .execute();
+    });
+
+    const result = await db
+      .selectFrom(TABLE_NAME)
+      .where("col_string", "=", col_string)
+      .select("col_string")
+      .executeTakeFirst();
+
+    assertEquals(
+      result?.col_string,
+      col_string,
+      "Data should exist after commit.",
+    );
+  });
+
+  /**
+   * Verifies that data is reverted when an error occurs.
+   */
+  await t.step("rollback on failure", async () => {
+    const col_string = "ACID Rollback Test";
+
+    await assertRejects(
+      async () => {
+        await db.transaction().execute(async (trx) => {
+          await trx
+            .insertInto(TABLE_NAME)
+            .values({
+              col_string,
+            })
+            .execute();
+
+          throw new Error("Trigger Rollback");
+        });
+      },
+      Error,
+      "Trigger Rollback",
+    );
+
+    const result = await db
+      .selectFrom(TABLE_NAME)
+      .where("col_string", "=", col_string)
+      .select("col_string")
+      .executeTakeFirst();
+
+    assertEquals(result, undefined, "Data should NOT exist after rollback.");
+  });
+
+  /**
+   * Verifies that rolling back to a savepoint is working.
+   */
+  await t.step("partial rollback using a savepoint", async () => {
+    const firstInsertString = "First Insert";
+    const secondInsertString = "Second Insert";
+    const thirdInsertString = "Third Insert";
+
+    const trx = await db.startTransaction().execute();
+
+    // First Insert
+    await trx
+      .insertInto(TABLE_NAME)
+      .values({
+        col_string: firstInsertString,
+      })
+      .executeTakeFirstOrThrow();
+
+    // New Savepoint
+    const trxAfterFirstInsert = await trx.savepoint("after_first_insert")
+      .execute();
+
+    // Second Insert (Simulated Error)
+    try {
+      await trxAfterFirstInsert
+        .insertInto(TABLE_NAME)
+        .values({
+          col_string: secondInsertString,
+        })
+        .executeTakeFirstOrThrow();
+
+      throw new Error("Simulated Error");
+    } catch (_error) {
+      await trxAfterFirstInsert.rollbackToSavepoint("after_first_insert")
+        .execute();
+    }
+
+    // Third Insert
+    await trx
+      .insertInto(TABLE_NAME)
+      .values({
+        col_string: thirdInsertString,
+      })
+      .execute();
+
+    await trx.commit().execute();
+
+    const rows = await db
+      .selectFrom(TABLE_NAME)
+      .where("col_string", "in", [
+        firstInsertString,
+        secondInsertString,
+        thirdInsertString,
+      ])
+      .select(["col_string"])
+      .execute();
+
+    const hasSecond = rows.some((r) => r.col_string === secondInsertString);
+
+    assertEquals(
+      hasSecond,
+      false,
+      `"${secondInsertString}" should NOT exist (Rolled back).`,
     );
   });
 });
