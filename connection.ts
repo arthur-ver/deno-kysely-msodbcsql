@@ -20,7 +20,7 @@ import { OdbcRequest } from "./request.ts";
 export class OdbcConnection implements DatabaseConnection {
   readonly #odbcLib: OdbcLib;
   readonly #connString: string;
-  #envHandle: Deno.PointerValue;
+  readonly #envHandle: Deno.PointerValue;
   #dbcHandle: Deno.PointerValue = null;
   #hasSocketError: boolean = false;
 
@@ -123,7 +123,7 @@ export class OdbcConnection implements DatabaseConnection {
     }
 
     if (savepointName) {
-      this.#testCheckpoint(savepointName);
+      this.#validateCheckpointName(savepointName);
 
       const compiledQuery = CompiledQuery.raw(
         `ROLLBACK TRANSACTION ${savepointName}`,
@@ -152,7 +152,7 @@ export class OdbcConnection implements DatabaseConnection {
       throw new Error("Connection is closed");
     }
 
-    this.#testCheckpoint(savepointName);
+    this.#validateCheckpointName(savepointName);
 
     const compiledQuery = CompiledQuery.raw(
       `SAVE TRANSACTION ${savepointName}`,
@@ -181,15 +181,19 @@ export class OdbcConnection implements DatabaseConnection {
       return false;
     }
 
-    const compiledQuery = CompiledQuery.raw("select 1");
-    const request = new OdbcRequest<unknown>(
-      this.#odbcLib,
-      compiledQuery,
-      this.#dbcHandle,
-    );
-    await request.execute();
+    try {
+      const compiledQuery = CompiledQuery.raw("select 1");
+      const request = new OdbcRequest<unknown>(
+        this.#odbcLib,
+        compiledQuery,
+        this.#dbcHandle,
+      );
+      await request.execute();
 
-    return true;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async reset(): Promise<void> {
@@ -236,7 +240,7 @@ export class OdbcConnection implements DatabaseConnection {
     );
   }
 
-  #testCheckpoint(savepointName: string) {
+  #validateCheckpointName(savepointName: string) {
     if (!/^[a-zA-Z0-9_]+$/.test(savepointName)) {
       throw new Error(
         `Security Error: Invalid savepoint name "${savepointName}"`,

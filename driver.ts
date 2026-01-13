@@ -114,10 +114,10 @@ export class OdbcDriver implements Driver {
   async destroy(): Promise<void> {
     await this.#pool.destroy();
 
-    if (this.#envHandle === null) return;
-
-    this.#odbcLib.freeHandle(HandleType.SQL_HANDLE_ENV, this.#envHandle);
-    this.#envHandle = null;
+    if (this.#envHandle !== null) {
+      this.#odbcLib.freeHandle(HandleType.SQL_HANDLE_ENV, this.#envHandle);
+      this.#envHandle = null;
+    }
 
     this.#odbcLib.close();
   }
