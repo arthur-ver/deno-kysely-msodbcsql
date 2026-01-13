@@ -123,7 +123,7 @@ export class OdbcConnection implements DatabaseConnection {
     }
 
     if (savepointName) {
-      this.#validateCheckpointName(savepointName);
+      this.#validateSavepointName(savepointName);
 
       const compiledQuery = CompiledQuery.raw(
         `ROLLBACK TRANSACTION ${savepointName}`,
@@ -152,7 +152,7 @@ export class OdbcConnection implements DatabaseConnection {
       throw new Error("Connection is closed");
     }
 
-    this.#validateCheckpointName(savepointName);
+    this.#validateSavepointName(savepointName);
 
     const compiledQuery = CompiledQuery.raw(
       `SAVE TRANSACTION ${savepointName}`,
@@ -240,7 +240,7 @@ export class OdbcConnection implements DatabaseConnection {
     );
   }
 
-  #validateCheckpointName(savepointName: string) {
+  #validateSavepointName(savepointName: string) {
     if (!/^[a-zA-Z0-9_]+$/.test(savepointName)) {
       throw new Error(
         `Security Error: Invalid savepoint name "${savepointName}"`,
