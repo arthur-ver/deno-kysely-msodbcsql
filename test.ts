@@ -14,6 +14,8 @@ interface TestTable {
   col_smallint: number | null;
   col_tinyint: number | null;
   col_decimal: string | null;
+  long_str: string | null;
+  long_bin: Uint8Array | null;
 }
 
 interface Database {
@@ -76,6 +78,8 @@ Deno.test.beforeAll(async () => {
     .addColumn("col_smallint", "smallint")
     .addColumn("col_tinyint", sql`tinyint`)
     .addColumn("col_decimal", "decimal(10, 2)")
+    .addColumn("long_str", sql`nvarchar(max)`)
+    .addColumn("long_bin", sql`varbinary(max)`)
     .execute();
 
   await db
@@ -366,6 +370,39 @@ Deno.test("➤ DATA TYPES", async (t) => {
   await t.step("DECIMAL", () => {
     assertEquals(typeof fetchedRow.col_decimal, "string");
     assertEquals(fetchedRow.col_decimal, inputDecimal);
+  });
+});
+
+Deno.test("➤ LARGE DATA (Truncation Handling)", async (t) => {
+  const longString = "A".repeat(100_000) + "END";
+  const longBinary = new Uint8Array(100_000).fill(0xA);
+  longBinary[longBinary.length - 1] = 0xB; // Marker at the end
+
+  await db.deleteFrom(TABLE_NAME).execute();
+
+  await t.step("insert large data", async () => {
+    await db.insertInto(TABLE_NAME)
+      .values({
+        long_str: longString,
+        long_bin: longBinary,
+      })
+      .execute();
+  });
+
+  await t.step("fetch and verify large string (NVARCHAR MAX)", async () => {
+    const row = await db.selectFrom(TABLE_NAME)
+      .select("long_str")
+      .executeTakeFirstOrThrow();
+
+    assertEquals(row.long_str, longString);
+  });
+
+  await t.step("fetch and verify large binary (VARBINARY MAX)", async () => {
+    const row = await db.selectFrom(TABLE_NAME)
+      .select("long_bin")
+      .executeTakeFirstOrThrow();
+
+    assertEquals(row.long_bin, longBinary);
   });
 });
 
