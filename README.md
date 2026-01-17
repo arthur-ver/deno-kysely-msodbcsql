@@ -30,7 +30,7 @@ C-level.
 ## Usage
 
 ```ts
-import { MssqlOdbcDialect } from "./mod.ts";
+import { MssqlOdbcDialect } from "./dialect.ts";
 
 const dialect = new MssqlOdbcDialect({
   tarn: {

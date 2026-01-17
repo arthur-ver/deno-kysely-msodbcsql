@@ -1,6 +1,6 @@
 import { Generated, Kysely, sql } from "@kysely/kysely";
 import { assertEquals, assertInstanceOf, assertRejects } from "@std/assert";
-import { MssqlOdbcDialect } from "./mod.ts";
+import { MssqlOdbcDialect } from "./dialect.ts";
 
 // ➤ INTERFACES & CONFIGURATION
 
@@ -58,7 +58,7 @@ Deno.test.beforeAll(async () => {
         },
       },
       odbc: {
-        libPath: Deno.env.get("MSODBC_LIB")!,
+        libPath: "/opt/homebrew/lib/libmsodbcsql.18.dylib",
         connString: [
           "driver={ODBC Driver 18 for SQL Server}",
           "server=127.0.0.1",
