@@ -1,4 +1,4 @@
-# 🚧 (WIP) deno-kysely-msodbc
+# 🚧 (WIP) deno-kysely-msodbcsql
 
 > This **Microsoft SQL Server (MSSQL) Kysely Driver for Deno** binds to the
 > native **Microsoft ODBC Driver for SQL Server** using Deno FFI.
