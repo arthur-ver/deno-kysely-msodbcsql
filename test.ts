@@ -58,7 +58,7 @@ Deno.test.beforeAll(async () => {
         },
       },
       odbc: {
-        libPath: "/opt/homebrew/lib/libmsodbcsql.18.dylib",
+        libPath: Deno.env.get("MSODBC_LIB")!,
         connString: [
           "driver={ODBC Driver 18 for SQL Server}",
           "server=127.0.0.1",
