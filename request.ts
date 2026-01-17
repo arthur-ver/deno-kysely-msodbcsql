@@ -325,7 +325,8 @@ export class OdbcRequest<R> {
       if (isNaN(val.getTime())) {
         throw new Error("Cannot bind Invalid Date object");
       }
-      const buf = new Uint8Array(16);
+      const bufLen = 16;
+      const buf = new Uint8Array(bufLen);
       const view = new DataView(buf.buffer);
 
       view.setInt16(0, val.getUTCFullYear(), true);
@@ -336,16 +337,14 @@ export class OdbcRequest<R> {
       view.setUint16(10, val.getUTCSeconds(), true);
       view.setUint32(12, val.getUTCMilliseconds() * 1_000_000, true);
 
-      const bufLen = 16n;
-
       return {
         cType: CType.SQL_C_TYPE_TIMESTAMP,
         sqlType: SQLType.SQL_TYPE_TIMESTAMP,
         buf,
         colSize: 27n,
         decimalDigits: 7,
-        bufLen,
-        lenIndBuf: new BigInt64Array([bufLen]),
+        bufLen: BigInt(bufLen),
+        lenIndBuf: new BigInt64Array([BigInt(bufLen)]),
       };
     }
 
@@ -481,13 +480,13 @@ export class OdbcRequest<R> {
       sqlType === SQLType.SQL_TYPE_TIMESTAMP ||
       sqlType === SQLType.SQL_TYPE_DATE
     ) {
-      const len = 50; // Sufficient for "YYYY-MM-DD HH:MM:SS.FFF..."
+      const len = 16;
       return {
         colNumber,
         isBound,
-        cType: CType.SQL_C_WCHAR,
-        buf: new Uint16Array(len),
-        bufLen: BigInt(len * 2),
+        cType: CType.SQL_C_TYPE_TIMESTAMP,
+        buf: new Uint8Array(len),
+        bufLen: BigInt(len),
         lenIndBuf: createInd(),
       };
     }
@@ -600,7 +599,7 @@ export class OdbcRequest<R> {
         isTruncated = status !== SQLRETURN.SQL_SUCCESS;
       }
 
-      let value: number | string | bigint | boolean | Uint8Array;
+      let value: number | string | bigint | boolean | Uint8Array | Date;
 
       switch (cType) {
         /**
@@ -617,6 +616,25 @@ export class OdbcRequest<R> {
         case CType.SQL_C_BIT:
           value = buf[0] === 1;
           break;
+
+        case CType.SQL_C_TYPE_TIMESTAMP: {
+          const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+
+          const year = view.getInt16(0, true); // SQLSMALLINT
+          const month = view.getUint16(2, true); // SQLUSMALLINT
+          const day = view.getUint16(4, true); // SQLUSMALLINT
+          const hour = view.getUint16(6, true); // SQLUSMALLINT
+          const minute = view.getUint16(8, true); // SQLUSMALLINT
+          const second = view.getUint16(10, true); // SQLUSMALLINT
+          const fraction = view.getUint32(12, true); // SQLUINTEGER
+
+          const ms = Math.round(fraction / 1_000_000);
+
+          value = new Date(
+            Date.UTC(year, month - 1, day, hour, minute, second, ms), // month is zero indexed
+          );
+          break;
+        }
 
         /**
          * Variable-length data types:
@@ -650,8 +668,6 @@ export class OdbcRequest<R> {
 
           break;
         }
-
-        // TODO: implement str -> Date conversion
 
         default:
           throw new Error(`Unknown binding C-Type: ${cType}`);

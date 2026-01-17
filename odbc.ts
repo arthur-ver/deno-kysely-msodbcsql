@@ -248,17 +248,25 @@ const libDefinitions = {
     ],
     result: "i16",
   },
+  SQLGetInfoW: {
+    parameters: [
+      "pointer",
+      "i16",
+      "buffer",
+      "i16",
+      "buffer",
+    ],
+    result: "i16",
+  },
 } as const;
 
 export class OdbcLib {
   readonly #dylib: Deno.DynamicLibrary<typeof libDefinitions>;
   readonly #symbols: OdbcSymbols;
-  readonly #odbcVer: Deno.PointerValue;
 
-  constructor(libPath: string, odbcVer: number) {
+  constructor(libPath: string) {
     this.#dylib = Deno.dlopen(libPath, libDefinitions);
     this.#symbols = this.#dylib.symbols;
-    this.#odbcVer = Deno.UnsafePointer.create(BigInt(odbcVer));
   }
 
   allocHandle(
@@ -302,11 +310,11 @@ export class OdbcLib {
     }
   }
 
-  setOdbcVersion(envHandle: Deno.PointerValue): void {
+  setOdbcV3(envHandle: Deno.PointerValue): void {
     const status = this.#symbols.SQLSetEnvAttr(
       envHandle,
       SQL_ATTR_ODBC_VERSION,
-      this.#odbcVer,
+      Deno.UnsafePointer.create(3n),
       0, // ignored
     );
 
@@ -1122,6 +1130,28 @@ interface OdbcSymbols {
     attribute: number,
     valuePtr: Deno.PointerValue,
     stringLength: number,
+  ):
+    | SQLRETURN.SQL_SUCCESS
+    | SQLRETURN.SQL_SUCCESS_WITH_INFO
+    | SQLRETURN.SQL_ERROR
+    | SQLRETURN.SQL_INVALID_HANDLE;
+
+  /**
+   * ```cpp
+   * SQLRETURN SQLGetInfo(
+   *      SQLHDBC         ConnectionHandle,
+   *      SQLUSMALLINT    InfoType,
+   *      SQLPOINTER      InfoValuePtr,
+   *      SQLSMALLINT     BufferLength,
+   *      SQLSMALLINT *   StringLengthPtr);
+   * ```
+   */
+  SQLGetInfoW(
+    connectionHandle: Deno.PointerValue,
+    infoType: number,
+    infoValuePtr: BufferSource,
+    bufferLength: number,
+    stringLengthPtr: BufferSource,
   ):
     | SQLRETURN.SQL_SUCCESS
     | SQLRETURN.SQL_SUCCESS_WITH_INFO
