@@ -222,8 +222,8 @@ export class OdbcRequest<R> {
   #getParamBinding(val: unknown): ParamBinding {
     if (val === null || typeof val === "undefined" || val === undefined) {
       return {
-        cType: CType.SQL_C_CHAR, // dummy
-        sqlType: SQLType.SQL_CHAR, // dummy
+        cType: CType.SQL_C_WCHAR, // dummy
+        sqlType: SQLType.SQL_WVARCHAR, // dummy
         buf: new Uint8Array(),
         colSize: 0n,
         decimalDigits: 0,

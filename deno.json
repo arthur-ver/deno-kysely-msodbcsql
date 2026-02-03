@@ -1,6 +1,6 @@
 {
   "name": "@arthur-ver/deno-kysely-msodbcsql",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "license": "MIT",
   "imports": {
     "@kysely/kysely": "jsr:@kysely/kysely@^0.28.11",
