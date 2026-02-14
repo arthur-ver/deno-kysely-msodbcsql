@@ -336,26 +336,31 @@ export class OdbcLib {
   ): Promise<void> {
     const connStrEncoded = strToBuf(connStr);
 
-    const status = await this.#symbols.SQLDriverConnectW(
-      dbcHandle,
-      null,
-      connStrEncoded,
-      SQL_NTS,
-      null,
-      0,
-      null,
-      SQL_DRIVER_NOPROMPT,
-    );
-
-    if (
-      status !== SQLRETURN.SQL_SUCCESS &&
-      status !== SQLRETURN.SQL_SUCCESS_WITH_INFO
-    ) {
-      const errorDetail = this.getOdbcError(
-        HandleType.SQL_HANDLE_DBC,
+    try {
+      const status = await this.#symbols.SQLDriverConnectW(
         dbcHandle,
+        null,
+        connStrEncoded,
+        SQL_NTS,
+        null,
+        0,
+        null,
+        SQL_DRIVER_NOPROMPT,
       );
-      throw new Error(`SQLDriverConnectW failed:\n${errorDetail}`);
+
+      if (
+        status !== SQLRETURN.SQL_SUCCESS &&
+        status !== SQLRETURN.SQL_SUCCESS_WITH_INFO
+      ) {
+        const errorDetail = this.getOdbcError(
+          HandleType.SQL_HANDLE_DBC,
+          dbcHandle,
+        );
+        throw new Error(`SQLDriverConnectW failed:\n${errorDetail}`);
+      }
+    } finally {
+      // prevent GC
+      connStrEncoded.byteLength;
     }
   }
 
@@ -379,25 +384,31 @@ export class OdbcLib {
     stmtHandle: Deno.PointerValue,
   ): Promise<{ colCount: number; numAffectedRows: bigint }> {
     const rawSqlEncoded = strToBuf(rawSql);
-    const status = await this.#symbols.SQLExecDirectW(
-      stmtHandle,
-      rawSqlEncoded,
-      SQL_NTS,
-    );
 
-    if (
-      status !== SQLRETURN.SQL_SUCCESS &&
-      status !== SQLRETURN.SQL_SUCCESS_WITH_INFO &&
-      status !== SQLRETURN.SQL_NO_DATA
-    ) {
-      throw new Error(
-        `Execution Error: ${
-          this.getOdbcError(
-            HandleType.SQL_HANDLE_STMT,
-            stmtHandle,
-          )
-        }\nSQL: ${rawSql}`,
+    try {
+      const status = await this.#symbols.SQLExecDirectW(
+        stmtHandle,
+        rawSqlEncoded,
+        SQL_NTS,
       );
+
+      if (
+        status !== SQLRETURN.SQL_SUCCESS &&
+        status !== SQLRETURN.SQL_SUCCESS_WITH_INFO &&
+        status !== SQLRETURN.SQL_NO_DATA
+      ) {
+        throw new Error(
+          `Execution Error: ${
+            this.getOdbcError(
+              HandleType.SQL_HANDLE_STMT,
+              stmtHandle,
+            )
+          }\nSQL: ${rawSql}`,
+        );
+      }
+    } finally {
+      // prevent GC
+      rawSqlEncoded.byteLength;
     }
 
     return {
