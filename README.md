@@ -1,10 +1,9 @@
-# 🚧 (WIP) deno-kysely-msodbcsql
+# deno-kysely-msodbcsql
 
 > This **MSSQL Kysely Driver for Deno** binds to the native **Microsoft ODBC
 > Driver for SQL Server** using Deno FFI.
 
-![Deno](https://img.shields.io/badge/deno-000000?style=for-the-badge&logo=deno&logoColor=white)
-![WIP](https://img.shields.io/badge/Status-WIP-orange?style=for-the-badge)
+[![JSR](https://jsr.io/badges/@arthur-ver/deno-kysely-msodbcsql)](https://jsr.io/@arthur-ver/deno-kysely-msodbcsql)
 
 ## Prerequisites
 
@@ -16,38 +15,43 @@
 > [!IMPORTANT]
 > **Deno Permission:** The `--allow-ffi` flag is required.
 
+## Installation
+
+```console
+deno add jsr:@kysely/kysely jsr:@arthur-ver/deno-kysely-msodbcsql
+```
+
 ## Usage
 
 ```ts
-import { MssqlOdbcDialect } from "./dialect.ts";
+import { Kysely } from "@kysely/kysely";
+import { MssqlOdbcDialect } from "@arthur-ver/deno-kysely-msodbcsql";
 
-const dialect = new MssqlOdbcDialect({
-  tarn: {
-    options: {
-      min: 0,
-      max: 10,
+const db = new Kysely<Database>({
+  dialect: new MssqlOdbcDialect({
+    tarn: {
+      options: {
+        min: 0,
+        max: 10,
+      },
     },
-  },
-  odbc: {
-    libPath: "/opt/homebrew/lib/libmsodbcsql.18.dylib",
-    connString: [
-      "driver={ODBC Driver 18 for SQL Server}",
-      "server=127.0.0.1",
-      "uid=sa",
-      "pwd=Test1234$",
-      "encrypt=yes",
-      "trustServerCertificate=yes",
-    ].join(";"),
-  },
+    odbc: {
+      libPath: "/opt/homebrew/lib/libmsodbcsql.18.dylib",
+      connString: [
+        "driver={ODBC Driver 18 for SQL Server}",
+        "server=<host>",
+        "database=<db>",
+        "uid=<username>",
+        "pwd=<password>",
+        "encrypt=yes",
+        "trustServerCertificate=yes",
+      ].join(";"),
+    },
+  }),
 });
-
-const db = new Kysely()<Database>({ dialect });
 ```
 
 ## Supported Data Types
-
-> [!IMPORTANT]
-> Any SQL type not listed below will throw an error.
 
 ### Deno → SQL
 
